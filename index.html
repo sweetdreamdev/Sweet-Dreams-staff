@@ -222,7 +222,28 @@ async function cambiarEstado(id, estado) {
 }
 
 // ---------- Urgencia ----------
-const urgencia = r => Math.min(1, Math.max(0, (Date.now() - new Date(r.created_at)) / SEMANA));
+const clamp01 = n => Math.min(1, Math.max(0, n));
+let manuales = {};
+try { manuales = JSON.parse(localStorage.getItem("urgencias_manual") || "{}"); } catch (_) {}
+const guardarManuales = () => { try { localStorage.setItem("urgencias_manual", JSON.stringify(manuales)); } catch (_) {} };
+const urgenciaAuto = r => clamp01((Date.now() - new Date(r.created_at)) / SEMANA);
+// Valor fijado a mano: columna "urgencia" de Supabase si existe, o el guardado en este navegador
+const urgenciaManual = r => typeof r.urgencia === "number" ? clamp01(r.urgencia) : (r.id in manuales ? clamp01(manuales[r.id]) : null);
+const urgencia = r => urgenciaManual(r) ?? urgenciaAuto(r);
+
+async function fijarUrgencia(id, valor) {
+  const r = reportes.find(x => x.id === id);
+  if (!r) return;
+  if (valor === null) delete manuales[id]; else manuales[id] = valor;
+  guardarManuales();
+  if ("urgencia" in r) {            // la tabla tiene la columna: se comparte con todo el staff
+    r.urgencia = valor;
+    if (!DEMO) {
+      const { error } = await db.from("reportes").update({ urgencia: valor }).eq("id", id);
+      if (error) toast("No se pudo guardar la temperatura: " + error.message);
+    }
+  }
+}
 
 function hace(ms) {
   const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
@@ -233,16 +254,25 @@ function hace(ms) {
 
 function barraHTML(r, resuelto) {
   const u = urgencia(r);
+  const manual = urgenciaManual(r) !== null;
   const color = `hsl(${Math.round(210 * (1 - u))} 85% 55%)`;
-  const texto = resuelto ? "Resuelto" : (u >= 1 ? "Más de una semana sin resolver" : hace(Date.now() - new Date(r.created_at)));
+  const edad = Date.now() - new Date(r.created_at);
+  const texto = resuelto ? "Resuelto" : (edad >= SEMANA ? "Más de una semana sin resolver" : hace(edad));
+  const nivel = Math.round(u * 100);
   return `
-    <div class="${resuelto ? "opacity-40" : ""}" role="img" aria-label="Urgencia: ${esc(texto)}">
-      <div class="relative h-2 rounded-full" style="background:linear-gradient(90deg,#3b82f6,#a855f7 50%,#ef4444)">
-        <span class="absolute top-1/2 w-4 h-4 rounded-full border-2 border-white shadow-lg"
-          style="left:${(u * 100).toFixed(1)}%;transform:translate(-50%,-50%);background:${color}"></span>
+    <div class="${resuelto ? "opacity-40" : ""}">
+      <div class="barra-urg py-2 -my-2 cursor-pointer select-none" style="touch-action:none" data-id="${r.id}"
+        role="slider" aria-label="Temperatura del reporte" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${nivel}"
+        aria-valuetext="${nivel}% (frío a caliente)" tabindex="0">
+        <div class="pista relative h-2 rounded-full" style="background:linear-gradient(90deg,#3b82f6,#a855f7 50%,#ef4444)">
+          <span class="pulgar absolute top-1/2 w-5 h-5 rounded-full border-2 border-white shadow-lg cursor-grab"
+            style="left:${(u * 100).toFixed(1)}%;transform:translate(-50%,-50%);background:${color}"></span>
+        </div>
       </div>
-      <div class="flex justify-between text-xs text-slate-500 mt-1.5">
-        <span>Reciente</span><span class="text-slate-300">${esc(texto)}</span><span>1 semana</span>
+      <div class="flex justify-between items-center text-xs text-slate-500 mt-2.5 gap-2">
+        <span class="text-blue-300">❄ Frío</span>
+        <span class="text-slate-300 text-center">${esc(texto)}${manual ? ` · <button data-reset-urg="${r.id}" class="underline text-slate-400 hover:text-white" title="Volver al cálculo automático por tiempo">auto</button>` : ""}</span>
+        <span class="text-red-300">Caliente 🔥</span>
       </div>
     </div>`;
 }
@@ -303,7 +333,7 @@ function tarjeta(r) {
 }
 
 function render() {
-  if (drag && drag.activo) { renderPendiente = true; return; }
+  if ((drag && drag.activo) || deslizando) { renderPendiente = true; return; }
   $("tabs").innerHTML = VISTAS.map(v => {
     const n = v.id === "Todos" ? reportes.length : reportes.filter(r => r.tipo_reporte === v.id).length;
     const activa = v.id === filtro;
@@ -317,7 +347,7 @@ function render() {
 
   const visibles = (filtro === "Todos" ? reportes : reportes.filter(r => r.tipo_reporte === filtro)).slice();
   visibles.sort((a, b) => orden === "prioridad"
-    ? new Date(a.created_at) - new Date(b.created_at)      // el más antiguo arriba
+    ? (urgencia(b) - urgencia(a)) || (new Date(a.created_at) - new Date(b.created_at))   // el más caliente arriba
     : new Date(b.created_at) - new Date(a.created_at));
 
   const COL = {
@@ -419,7 +449,7 @@ const onCancel = () => finArrastre(false);
 document.addEventListener("pointerdown", e => {
   if (drag || e.button !== 0) return;
   const wrap = e.target.closest(".card-wrap");
-  if (!wrap || e.target.closest("a, button, select, input, textarea")) return;
+  if (!wrap || e.target.closest("a, button, select, input, textarea, .barra-urg")) return;
   // En pantallas táctiles solo se arrastra desde el icono de agarre (para poder seguir haciendo scroll)
   if (e.pointerType === "touch" && !e.target.closest(".grip")) return;
   drag = { id: Number(wrap.dataset.cardId), origen: wrap, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, activo: false };
@@ -428,7 +458,61 @@ document.addEventListener("pointerdown", e => {
   document.addEventListener("pointercancel", onCancel);
 });
 
+// ---------- Barra de temperatura (deslizable) ----------
+let deslizando = false;
+
+function valorDesdeX(pista, x) {
+  const r = pista.getBoundingClientRect();
+  return clamp01((x - r.left) / r.width);
+}
+function pintarBarra(barra, u) {
+  const pulgar = barra.querySelector(".pulgar");
+  pulgar.style.left = (u * 100).toFixed(1) + "%";
+  pulgar.style.background = `hsl(${Math.round(210 * (1 - u))} 85% 55%)`;
+  barra.setAttribute("aria-valuenow", Math.round(u * 100));
+}
+function terminarDeslizar() {
+  deslizando = false;
+  if (renderPendiente) { renderPendiente = false; render(); }
+}
+
+document.addEventListener("pointerdown", e => {
+  const barra = e.target.closest(".barra-urg");
+  if (!barra || e.button !== 0) return;
+  e.preventDefault();
+  const id = Number(barra.dataset.id), pista = barra.querySelector(".pista");
+  deslizando = true;
+  let u = valorDesdeX(pista, e.clientX);
+  pintarBarra(barra, u);
+  barra.setPointerCapture(e.pointerId);
+  const mover = ev => { u = valorDesdeX(pista, ev.clientX); pintarBarra(barra, u); };
+  const fin = () => {
+    barra.removeEventListener("pointermove", mover);
+    barra.removeEventListener("pointerup", fin);
+    barra.removeEventListener("pointercancel", fin);
+    fijarUrgencia(id, u);
+    terminarDeslizar(); render();
+  };
+  barra.addEventListener("pointermove", mover);
+  barra.addEventListener("pointerup", fin);
+  barra.addEventListener("pointercancel", fin);
+});
+
+// Teclado: flechas izquierda/derecha
+document.addEventListener("keydown", e => {
+  const barra = e.target.closest?.(".barra-urg");
+  if (!barra || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+  e.preventDefault();
+  const id = Number(barra.dataset.id), r = reportes.find(x => x.id === id);
+  if (!r) return;
+  fijarUrgencia(id, clamp01(urgencia(r) + (e.key === "ArrowRight" ? 0.05 : -0.05)));
+  render();
+  document.querySelector(`.barra-urg[data-id="${id}"]`)?.focus();
+});
+
 document.addEventListener("click", e => {
+  const reset = e.target.closest("[data-reset-urg]");
+  if (reset) { fijarUrgencia(Number(reset.dataset.resetUrg), null); render(); return; }
   if (bloquearClick) { e.preventDefault(); e.stopPropagation(); return; }
   const tab = e.target.closest(".tab");
   if (tab) { filtro = tab.dataset.vista; render(); return; }
