@@ -59,9 +59,6 @@
   <!-- ============ CONTENIDO ============ -->
   <main class="flex-1 p-4 md:p-8 w-full min-w-0">
     <div id="error" class="hidden mb-6 rounded-lg border border-red-500/40 bg-red-500/10 text-red-200 text-sm px-4 py-3"></div>
-    <div id="demo" class="hidden mb-6 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-4 py-3">
-      Estás viendo casos de ejemplo. Cuando pongas tu URL y tu clave de Supabase en el archivo, aquí aparecerán los casos reales.
-    </div>
 
 
     <header class="flex flex-wrap items-end justify-between gap-3 mb-5">
@@ -72,6 +69,12 @@
           <input id="buscar" type="search" autocomplete="off" placeholder="Buscar caso, usuario, nota…" aria-label="Buscar casos"
             class="w-full sm:w-72 bg-panel border border-line rounded-lg pl-9 pr-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">
         </div>
+        <select id="filtro-resp" aria-label="Filtrar por responsable" class="bg-panel border border-line rounded-lg px-2.5 py-2 text-sm text-slate-300 focus:border-fx focus:outline-none">
+          <option value="">Todos</option>
+          <option value="__mios">Mis casos</option>
+          <option value="__sin">Sin asignar</option>
+        </select>
+        <button id="sonido-btn" type="button" class="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors"></button>
         <button id="admin-abrir" type="button" class="flex items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors">
           <svg viewBox="0 0 24 24" class="w-4 h-4 text-fx" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
           Administradores</button>
@@ -170,19 +173,15 @@ const DIAS_ARCHIVO = 30;   // los casos resueltos hace más de estos días se oc
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// Mientras no cambies la URL, el panel muestra casos de ejemplo
-const DEMO = SUPABASE_URL.includes("TU-PROYECTO") || SUPABASE_KEY.includes("TU_ANON");
 let db = null, errorInicial = null;
-if (!DEMO) {
-  try {
-    const url = SUPABASE_URL.trim().replace(/\/+$/, "");
-    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url))
-      throw new Error("La URL de Supabase no es válida. Debe ser como https://abcdefgh.supabase.co (sin /rest/v1 ni nada detrás).");
-    if (typeof supabase === "undefined")
-      throw new Error("No se pudo cargar la librería de Supabase. Revisa tu conexión o desactiva el bloqueador de anuncios.");
-    db = supabase.createClient(url, SUPABASE_KEY.trim());
-  } catch (e) { errorInicial = e.message; }
-}
+try {
+  const url = SUPABASE_URL.trim().replace(/\/+$/, "");
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url))
+    throw new Error("La URL de Supabase no es válida. Debe ser como https://abcdefgh.supabase.co (sin /rest/v1 ni nada detrás).");
+  if (typeof supabase === "undefined")
+    throw new Error("No se pudo cargar la librería de Supabase. Revisa tu conexión o desactiva el bloqueador de anuncios.");
+  db = supabase.createClient(url, SUPABASE_KEY.trim());
+} catch (e) { errorInicial = e.message; }
 
 function mostrarError(msg) {
   $("error").innerHTML = "<strong>No se pudo conectar con Supabase.</strong><br>" + esc(msg);
@@ -214,18 +213,25 @@ let busqueda = "", verArchivados = false, editando = false;
 const abiertos = new Set();                       // tarjetas con las notas desplegadas
 const norm = t => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const bonito = u => u.charAt(0).toUpperCase() + u.slice(1);
-let STAFF_NOMBRES = ["Apocalypse", "Gio"], listaStaff = [];   // se actualiza al iniciar sesión
+let listaStaff = [];   // se actualiza al iniciar sesión
 let usuarioActual = null, soyDueno = false, quitando = null, quitarT = null;
 const COLS_STAFF = "usuario,email,creado_por,creado_en,es_dueno";
 const ARCHIVO_MS = DIAS_ARCHIVO * 24 * 60 * 60 * 1000;
 const resueltoHace = r => Date.now() - new Date(r.resuelto_en || r.created_at);
+let notas = [], notasIdx = new Map();            // historial de notas por caso
+const borradorNota = new Map();                  // lo que se está escribiendo en cada caso
+const expandidas = new Set();                    // descripciones largas desplegadas
+let filtroResp = "", sonidoOn = true;
+const fechaCorta = d => new Date(d).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+const coincideResp = r => !filtroResp || (filtroResp === "__sin" ? !r.responsable_usuario
+  : filtroResp === "__mios" ? r.responsable_usuario === usuarioActual : true);
 
 
-function toast(msg) {
+function toast(msg, ms = 3500) {
   const t = $("toast");
   t.textContent = msg; t.classList.remove("hidden");
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => t.classList.add("hidden"), 3500);
+  toast.t = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
 function estadoConexion(texto, color) {
@@ -233,79 +239,101 @@ function estadoConexion(texto, color) {
   $("live-dot").className = "w-2 h-2 rounded-full " + color;
 }
 
-// ---------- Sonido suave al mover un caso de categoría ----------
+// ---------- Sonidos (se pueden silenciar con el botón de la campana) ----------
 let audioCtx = null;
-function sonidoMover() {
+try { sonidoOn = localStorage.getItem("sonido") !== "off"; } catch (_) {}
+function actualizarSonidoBtn() {
+  const b = $("sonido-btn");
+  b.textContent = sonidoOn ? "🔔" : "🔕";
+  b.setAttribute("aria-pressed", String(sonidoOn));
+  b.setAttribute("aria-label", sonidoOn ? "Silenciar sonidos" : "Activar sonidos");
+  b.title = sonidoOn ? "Silenciar sonidos" : "Activar sonidos";
+}
+// pasos: [[frecuenciaInicial, frecuenciaFinal, inicioSeg, duracionSeg], ...]
+function tono(pasos, vol = 0.04) {
+  if (!sonidoOn) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
-    const t0 = audioCtx.currentTime, o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type = "sine";
-    o.frequency.setValueAtTime(520, t0);
-    o.frequency.exponentialRampToValueAtTime(340, t0 + 0.12);   // "plop" corto
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(0.04, t0 + 0.01);       // volumen muy bajo
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
-    o.connect(g).connect(audioCtx.destination);
-    o.start(t0); o.stop(t0 + 0.16);
+    const t0 = audioCtx.currentTime;
+    for (const [f1, f2, ini, dur] of pasos) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(f1, t0 + ini);
+      o.frequency.exponentialRampToValueAtTime(f2, t0 + ini + dur);
+      g.gain.setValueAtTime(0.0001, t0 + ini);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + ini + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + ini + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t0 + ini); o.stop(t0 + ini + dur + 0.02);
+    }
   } catch (_) {}
 }
+const sonidoMover = () => tono([[520, 340, 0, 0.14]]);
+const sonidoNuevo = () => tono([[660, 660, 0, 0.12], [880, 880, 0.13, 0.2]], 0.05);
 
 // ---------- Datos ----------
-function datosDemo() {
-  const ahora = Date.now(), min = 60000, dia = 24 * 60 * min;
-  const f = ms => new Date(ahora - ms).toISOString();
-  return [
-    { id: 5, created_at: f(25 * min),  tipo_reporte: "Bug",   usuario_discord: "Rafa_Driver#2041", estado: "Pendiente",
-      titulo: "Los coches desaparecen al salir del garaje",
-      descripcion: "Al sacar un vehículo del garaje de Legion Square se queda invisible unos segundos y luego aparece en otro sitio. Me ha pasado 3 veces seguidas.",
-      pruebas: "https://www.youtube.com/watch?v=ejemplo" },
-    { id: 4, created_at: f(1.4 * dia), tipo_reporte: "Queja", usuario_discord: "LunaRP#7788", estado: "En revisión",
-      titulo: "Policía sin rol en el control de la autopista",
-      descripcion: "Dos agentes me multaron sin dar ninguna explicación y sin usar /me. Creo que rompieron las normas de rol, adjunto el clip.",
-      pruebas: "https://streamable.com/ejemplo" },
-    { id: 3, created_at: f(3.2 * dia), tipo_reporte: "Otro",  usuario_discord: "Marco_V#1203", estado: "Pendiente",
-      titulo: "Sugerencia: nuevo trabajo de mecánico",
-      descripcion: "Estaría bien un trabajo de mecánico con taller propio y piezas para tunear. Hay muchos jugadores interesados.",
-      pruebas: null },
-    { id: 2, created_at: f(6.3 * dia), tipo_reporte: "Bug",   usuario_discord: "Nico.Fx#9012", estado: "Pendiente",
-      titulo: "El inventario se queda bloqueado",
-      descripcion: "Después de abrir el maletero de un coche el inventario no responde y hay que reconectar. Pasa solo con coches deportivos.",
-      pruebas: "https://imgur.com/ejemplo" },
-    { id: 1, created_at: f(9 * dia),   tipo_reporte: "Queja", usuario_discord: "Sofi_RP#3345", estado: "Resuelto",
-      titulo: "Cobro doble en la tienda 24/7",
-      descripcion: "Me cobraron dos veces una compra de 350$. Ya me lo devolvieron, gracias al staff por la rapidez.",
-      pruebas: null }
-  ];
+function indexarNotas() {
+  notasIdx = new Map();
+  for (const n of notas) {
+    if (!notasIdx.has(n.caso_id)) notasIdx.set(n.caso_id, []);
+    notasIdx.get(n.caso_id).push(n);
+  }
+}
+const notasDe = id => notasIdx.get(id) || [];
+
+async function pedirDatos() {
+  const consulta = Promise.all([
+    db.from("reportes").select("*").order("created_at", { ascending: false }),
+    db.from("notas_caso").select("*").order("creado_en", { ascending: true })
+  ]);
+  const espera = new Promise((_, rej) => setTimeout(() => rej(new Error("Supabase no responde (10 s). Revisa la URL y que el proyecto no esté pausado.")), 10000));
+  const [rep, not] = await Promise.race([consulta, espera]);
+  if (rep.error) throw new Error(rep.error.message + (rep.error.code === "42501" || /permission|policy/i.test(rep.error.message) ? " No tienes permiso para leer los casos: comprueba que has iniciado sesión con un usuario del staff y que has ejecutado supabase.sql." : ""));
+  reportes = rep.data;
+  if (not.error) toast("No se pudieron cargar las notas: " + not.error.message + " (¿has ejecutado supabase_migracion.sql?)", 8000);
+  notas = not.error ? [] : not.data;
+  indexarNotas();
 }
 
 async function cargar() {
-  if (DEMO) {
-    reportes = datosDemo();
-    $("demo").classList.remove("hidden");
-    estadoConexion("Modo demostración", "bg-amber-400");
-    render();
-    return;
-  }
   if (errorInicial) { mostrarError(errorInicial); return; }
   try {
-    const consulta = db.from("reportes").select("*").order("created_at", { ascending: false });
-    const espera = new Promise((_, rej) => setTimeout(() => rej(new Error("Supabase no responde (10 s). Revisa la URL y que el proyecto no esté pausado.")), 10000));
-    const { data, error } = await Promise.race([consulta, espera]);
-    if (error) throw new Error(error.message + (error.code === "42501" || /permission|policy/i.test(error.message) ? " No tienes permiso para leer los casos: comprueba que has iniciado sesión con un usuario del staff y que has ejecutado supabase.sql." : ""));
-    reportes = data;
+    await pedirDatos();
     $("error").classList.add("hidden");
     render();
     suscribir();
   } catch (e) { mostrarError(e.message); }
 }
 
+// Vuelve a pedir los datos (tras una caída de conexión no llegan los cambios que pasaron mientras tanto)
+async function recargarDatos() {
+  try { await pedirDatos(); render(); }
+  catch (e) { toast("No se pudieron actualizar los casos: " + e.message, 6000); }
+}
+
+// ---------- Avisos de casos nuevos ----------
+const TITULO_BASE = document.title;
+let nuevosSinVer = 0;
+function actualizarTitulo() { document.title = (nuevosSinVer ? "(" + nuevosSinVer + ") " : "") + TITULO_BASE; }
+function avisarNuevo(r) {
+  toast("Nuevo caso #" + r.id + " · " + (r.titulo || "Sin título"), 6000);
+  sonidoNuevo();
+  if (document.hidden) { nuevosSinVer++; actualizarTitulo(); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && nuevosSinVer) { nuevosSinVer = 0; actualizarTitulo(); }
+});
+
+// ---------- Tiempo real y reconexión ----------
+let suscritoAntes = false;
 function suscribir() {
   if (canal) db.removeChannel(canal);
+  suscritoAntes = false;
   canal = db.channel("reportes-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "reportes" }, p => {
       if (p.eventType === "INSERT") {
-        if (!reportes.some(r => r.id === p.new.id)) reportes.unshift(p.new);
+        if (!reportes.some(r => r.id === p.new.id)) { reportes.unshift(p.new); avisarNuevo(p.new); }
       } else if (p.eventType === "UPDATE") {
         reportes = reportes.map(r => r.id === p.new.id ? p.new : r);
       } else if (p.eventType === "DELETE") {
@@ -313,31 +341,40 @@ function suscribir() {
       }
       render();
     })
-    .subscribe(st => st === "SUBSCRIBED" ? estadoConexion("En vivo", "bg-emerald-400") : estadoConexion("Reconectando…", "bg-slate-500"));
+    .on("postgres_changes", { event: "*", schema: "public", table: "notas_caso" }, p => {
+      if (p.eventType === "INSERT") { if (!notas.some(n => n.id === p.new.id)) notas.push(p.new); }
+      else if (p.eventType === "DELETE") notas = notas.filter(n => n.id !== p.old.id);
+      indexarNotas(); render();
+    })
+    .subscribe(st => {
+      if (st === "SUBSCRIBED") {
+        estadoConexion("En vivo", "bg-emerald-400");
+        if (suscritoAntes) recargarDatos();        // era una reconexión: ponemos todo al día
+        suscritoAntes = true;
+      } else estadoConexion("Reconectando…", "bg-amber-400");
+    });
 }
+window.addEventListener("offline", () => estadoConexion("Sin conexión", "bg-red-500"));
+window.addEventListener("online", () => { if (canal) { estadoConexion("Reconectando…", "bg-amber-400"); recargarDatos(); } });
 
 async function cambiarEstado(id, estado) {
   const r = reportes.find(x => x.id === id);
   if (!r || r.estado === estado) return;
-  const anterior = r.estado, anteriorRes = r.resuelto_en, tieneRes = "resuelto_en" in r;
+  const anterior = r.estado, anteriorRes = r.resuelto_en;
   r.estado = estado;
   r.resuelto_en = estado === "Resuelto" ? new Date().toISOString() : null;
   render();
-  if (DEMO) { toast("Caso #" + id + " marcado como " + estado + " (solo demostración)"); return; }
-  const cambios = { estado };
-  if (tieneRes) cambios.resuelto_en = r.resuelto_en;
-  const { error } = await db.from("reportes").update(cambios).eq("id", id);
+  const { error } = await db.from("reportes").update({ estado, resuelto_en: r.resuelto_en }).eq("id", id);
   if (error) { r.estado = anterior; r.resuelto_en = anteriorRes; render(); toast("No se pudo cambiar el estado: " + error.message); }
   else toast("Caso #" + id + " marcado como " + estado);
 }
 
-// Guarda un campo suelto (responsable, notas) con la misma lógica optimista
+// Guarda un campo suelto (responsable…) con la misma lógica optimista
 async function guardarCampo(id, campo, valor, aviso) {
   const r = reportes.find(x => x.id === id);
   if (!r) return;
   const anterior = r[campo];
   r[campo] = valor;
-  if (DEMO) { if (aviso) toast(aviso + " (solo demostración)"); return; }
   const { error } = await db.from("reportes").update({ [campo]: valor }).eq("id", id);
   if (error) { r[campo] = anterior; render(); toast("No se pudo guardar: " + error.message); }
   else if (aviso) toast(aviso);
@@ -346,15 +383,36 @@ async function guardarCampo(id, campo, valor, aviso) {
 async function eliminarCaso(id) {
   const r = reportes.find(x => x.id === id);
   if (!r) return;
-  if (!DEMO) {
-    const { data, error } = await db.from("reportes").delete().eq("id", id).select();
-    if (error) { toast("No se pudo eliminar: " + error.message); return; }
-    if (!data || !data.length) { toast("No se pudo eliminar el caso (revisa los permisos de la tabla en Supabase)."); return; }
-  }
+  const { data, error } = await db.from("reportes").delete().eq("id", id).select();
+  if (error) { toast("No se pudo eliminar: " + error.message); return; }
+  if (!data || !data.length) { toast("No se pudo eliminar el caso (revisa los permisos de la tabla en Supabase)."); return; }
   reportes = reportes.filter(x => x.id !== id);
-  delete manuales[id]; guardarManuales();
+  notas = notas.filter(n => n.caso_id !== id); indexarNotas();
   render();
-  toast("Caso #" + id + " eliminado" + (DEMO ? " (solo demostración)" : ""));
+  toast("Caso #" + id + " eliminado");
+}
+
+// ---------- Notas del staff (historial) ----------
+async function agregarNota(id) {
+  const ta = document.querySelector(`textarea[data-nota-nueva="${id}"]`);
+  const texto = (ta ? ta.value : (borradorNota.get(id) || "")).trim();
+  if (!texto) return;
+  const btn = document.querySelector(`[data-nota-add="${id}"]`);
+  if (btn) btn.disabled = true;
+  const { data, error } = await db.from("notas_caso").insert({ caso_id: id, autor: usuarioActual, texto }).select().single();
+  if (error) { if (btn) btn.disabled = false; toast("No se pudo guardar la nota: " + error.message); return; }
+  borradorNota.delete(id);
+  if (!notas.some(n => n.id === data.id)) notas.push(data);
+  abiertos.add(id); indexarNotas(); editando = false; render();
+  toast("Nota añadida");
+}
+
+async function borrarNota(id) {
+  if (!confirm("¿Borrar esta nota?")) return;
+  const { data, error } = await db.from("notas_caso").delete().eq("id", id).select();
+  if (error || !data || !data.length) { toast("No se pudo borrar la nota" + (error ? ": " + error.message : "")); return; }
+  notas = notas.filter(n => n.id !== id); indexarNotas(); render();
+  toast("Nota borrada");
 }
 
 let casoAEliminar = null;
@@ -374,26 +432,18 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && casoAElimi
 
 // ---------- Urgencia ----------
 const clamp01 = n => Math.min(1, Math.max(0, n));
-let manuales = {};
-try { manuales = JSON.parse(localStorage.getItem("urgencias_manual") || "{}"); } catch (_) {}
-const guardarManuales = () => { try { localStorage.setItem("urgencias_manual", JSON.stringify(manuales)); } catch (_) {} };
 const urgenciaAuto = r => clamp01((Date.now() - new Date(r.created_at)) / SEMANA);
-// Valor fijado a mano: columna "urgencia" de Supabase si existe, o el guardado en este navegador
-const urgenciaManual = r => typeof r.urgencia === "number" ? clamp01(r.urgencia) : (r.id in manuales ? clamp01(manuales[r.id]) : null);
+// Valor fijado a mano: columna "urgencia" de Supabase (la misma para todo el staff)
+const urgenciaManual = r => typeof r.urgencia === "number" ? clamp01(r.urgencia) : null;
 const urgencia = r => urgenciaManual(r) ?? urgenciaAuto(r);
 
 async function fijarUrgencia(id, valor) {
   const r = reportes.find(x => x.id === id);
   if (!r) return;
-  if (valor === null) delete manuales[id]; else manuales[id] = valor;
-  guardarManuales();
-  if ("urgencia" in r) {            // la tabla tiene la columna: se comparte con todo el staff
-    r.urgencia = valor;
-    if (!DEMO) {
-      const { error } = await db.from("reportes").update({ urgencia: valor }).eq("id", id);
-      if (error) toast("No se pudo guardar la temperatura: " + error.message);
-    }
-  }
+  const anterior = r.urgencia ?? null;
+  r.urgencia = valor;
+  const { error } = await db.from("reportes").update({ urgencia: valor }).eq("id", id);
+  if (error) { r.urgencia = anterior; render(); toast("No se pudo guardar la temperatura: " + error.message); }
 }
 
 function hace(ms) {
@@ -451,20 +501,35 @@ function tarjeta(r) {
   const fecha = new Date(r.created_at).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
 
 
+  const ns = notasDe(r.id);
+  const larga = String(r.descripcion || "").length > 260, abierta = expandidas.has(r.id);
+  const notasHTML = ns.map(n => `
+          <li class="rounded-md bg-base border border-line px-3 py-2">
+            <div class="flex items-center gap-2 text-xs text-slate-400">
+              <span class="font-medium text-slate-200">${esc(bonito(n.autor))}</span><span>${esc(fechaCorta(n.creado_en))}</span>
+              ${n.autor === usuarioActual ? `<button type="button" data-nota-borrar="${n.id}" class="ml-auto px-1 hover:text-red-300" aria-label="Borrar nota">✕</button>` : ""}
+            </div>
+            <p class="mt-1 text-sm text-slate-200 whitespace-pre-wrap break-words">${esc(n.texto)}</p>
+          </li>`).join("");
+
   const staffHTML = `
       <div class="mt-5 pt-4 border-t border-line">
         <div class="flex items-center gap-2">
           <label class="text-xs text-slate-400" for="resp-${r.id}">Responsable</label>
           <select id="resp-${r.id}" data-resp="${r.id}" class="flex-1 min-w-0 bg-base border border-line rounded-md px-2 py-1.5 text-sm text-slate-200 focus:border-fx focus:outline-none">
             <option value="">Sin asignar</option>
-            ${STAFF_NOMBRES.map(n => `<option value="${esc(n)}" ${n === r.responsable ? "selected" : ""}>${esc(n)}</option>`).join("")}
-            ${r.responsable && !STAFF_NOMBRES.includes(r.responsable) ? `<option value="${esc(r.responsable)}" selected>${esc(r.responsable)} (ya no es admin)</option>` : ""}
+            ${listaStaff.map(m => `<option value="${esc(m.usuario)}" ${m.usuario === r.responsable_usuario ? "selected" : ""}>${esc(bonito(m.usuario))}</option>`).join("")}
           </select>
         </div>
         <details class="mt-3" data-det="${r.id}" ${abiertos.has(r.id) ? "open" : ""}>
-          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Notas del staff${r.notas ? ' <span class="text-fx">●</span>' : ""}</summary>
-          <textarea data-nota="${r.id}" maxlength="1000" rows="3" placeholder="Notas internas (solo las ve el staff)…"
-            class="mt-2 w-full resize-y bg-base border border-line rounded-md px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">${esc(r.notas || "")}</textarea>
+          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Notas del staff${ns.length ? ` <span class="text-fx">(${ns.length})</span>` : ""}</summary>
+          ${ns.length ? `<ul class="mt-2 space-y-2 max-h-56 overflow-y-auto">${notasHTML}</ul>` : ""}
+          <textarea data-nota-nueva="${r.id}" maxlength="1000" rows="2" placeholder="Añadir una nota interna (solo la ve el staff)…"
+            class="mt-2 w-full resize-y bg-base border border-line rounded-md px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">${esc(borradorNota.get(r.id) || "")}</textarea>
+          <div class="mt-2 flex items-center justify-between gap-2">
+            <span class="text-xs text-slate-500">Ctrl + Enter para añadir</span>
+            <button type="button" data-nota-add="${r.id}" class="rounded-md bg-fx hover:bg-orange-400 disabled:opacity-60 text-black text-xs font-semibold px-3 py-1.5 transition-colors">Añadir nota</button>
+          </div>
         </details>
       </div>`;
 
@@ -490,7 +555,8 @@ function tarjeta(r) {
         <span class="text-sm text-slate-200 font-medium">${esc(r.usuario_discord || "Anónimo")}</span>
       </div>
 
-      <p class="mt-4 text-slate-300 leading-relaxed whitespace-pre-wrap break-words max-w-[68ch]">${esc(r.descripcion || "Sin descripción.")}</p>
+      <p class="mt-4 text-slate-300 leading-relaxed whitespace-pre-wrap break-words max-w-[68ch] ${larga && !abierta ? "line-clamp-4" : ""}">${esc(r.descripcion || "Sin descripción.")}</p>
+      ${larga ? `<button type="button" data-mas="${r.id}" class="mt-1 text-xs font-medium text-fx hover:underline">${abierta ? "Ver menos" : "Ver más"}</button>` : ""}
       ${r.pruebas ? `<div class="mt-4">${pruebasHTML(r.pruebas)}</div>` : ""}
 
       <div class="mt-5">${barraHTML(r, estado === "Resuelto")}</div>
@@ -515,8 +581,9 @@ function render() {
 
   const raw = busqueda.trim(), q = norm(raw.replace(/^#/, "")), porId = /^#\d+$/.test(raw);
   const visibles = (filtro === "Todos" ? reportes : reportes.filter(r => r.tipo_reporte === filtro))
+    .filter(coincideResp)
     .filter(r => !q || (porId ? String(r.id) === q
-      : norm([r.id, r.titulo, r.descripcion, r.usuario_discord, r.tipo_reporte, r.responsable, r.notas].join(" ")).includes(q)));
+      : norm([r.id, r.titulo, r.descripcion, r.usuario_discord, r.tipo_reporte, r.responsable_usuario, notasDe(r.id).map(n => n.texto).join(" ")].join(" ")).includes(q)));
   visibles.sort((a, b) => orden === "prioridad"
     ? (urgencia(b) - urgencia(a)) || (new Date(a.created_at) - new Date(b.created_at))   // el más caliente arriba
     : new Date(b.created_at) - new Date(a.created_at));
@@ -695,6 +762,12 @@ document.addEventListener("keydown", e => {
 
 document.addEventListener("click", e => {
   if (e.target.closest("[data-archivo]")) { verArchivados = !verArchivados; render(); return; }
+  const mas = e.target.closest("[data-mas]");
+  if (mas) { const id = Number(mas.dataset.mas); expandidas.has(id) ? expandidas.delete(id) : expandidas.add(id); render(); return; }
+  const addN = e.target.closest("[data-nota-add]");
+  if (addN) { agregarNota(Number(addN.dataset.notaAdd)); return; }
+  const delN = e.target.closest("[data-nota-borrar]");
+  if (delN) { borrarNota(Number(delN.dataset.notaBorrar)); return; }
   const borrar = e.target.closest("[data-borrar]");
   if (borrar) { pedirEliminar(Number(borrar.dataset.borrar)); return; }
   const reset = e.target.closest("[data-reset-urg]");
@@ -707,21 +780,27 @@ document.addEventListener("click", e => {
 });
 
 $("buscar").addEventListener("input", e => { busqueda = e.target.value; render(); });
+$("filtro-resp").addEventListener("change", e => { filtroResp = e.target.value; render(); });
+$("sonido-btn").addEventListener("click", () => {
+  sonidoOn = !sonidoOn;
+  try { localStorage.setItem("sonido", sonidoOn ? "on" : "off"); } catch (_) {}
+  actualizarSonidoBtn();
+  if (sonidoOn) sonidoNuevo();
+});
+actualizarSonidoBtn();
 
 document.addEventListener("change", e => {
   const sel = e.target.closest?.("[data-resp]");
   if (sel) {
     const id = Number(sel.dataset.resp), v = sel.value || null;
-    guardarCampo(id, "responsable", v, v ? "Caso #" + id + " asignado a " + v : "Caso #" + id + " sin responsable");
+    guardarCampo(id, "responsable_usuario", v, v ? "Caso #" + id + " asignado a " + bonito(v) : "Caso #" + id + " sin responsable");
     return;
   }
-  const nota = e.target.closest?.("[data-nota]");
-  if (nota) guardarCampo(Number(nota.dataset.nota), "notas", nota.value.trim() || null, "Nota guardada");
 });
 // Mientras se escribe una nota no se redibuja la página (se perdería lo escrito)
-document.addEventListener("focusin", e => { if (e.target.matches?.("textarea[data-nota]")) editando = true; });
+document.addEventListener("focusin", e => { if (e.target.matches?.("textarea[data-nota-nueva]")) editando = true; });
 document.addEventListener("focusout", e => {
-  if (!e.target.matches?.("textarea[data-nota]")) return;
+  if (!e.target.matches?.("textarea[data-nota-nueva]")) return;
   editando = false;
   setTimeout(() => { if (renderPendiente && !editando) { renderPendiente = false; render(); } }, 0);
 });
@@ -730,12 +809,22 @@ document.addEventListener("toggle", e => {
   if (d.dataset && d.dataset.det) { const id = Number(d.dataset.det); d.open ? abiertos.add(id) : abiertos.delete(id); }
 }, true);
 
+// Borradores de notas y atajo Ctrl/Cmd + Enter para añadirlas
+document.addEventListener("input", e => {
+  const t = e.target.closest?.("textarea[data-nota-nueva]");
+  if (t) borradorNota.set(Number(t.dataset.notaNueva), t.value);
+});
+document.addEventListener("keydown", e => {
+  const t = e.target.closest?.("textarea[data-nota-nueva]");
+  if (t && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); agregarNota(Number(t.dataset.notaNueva)); }
+});
+
 // ---------- Inicio de sesión ----------
 // (el usuario se convierte en correo con DOMINIO_STAFF; la pertenencia al staff se comprueba en la tabla "staff")
 
 function mostrarLogin() {
   if (canal && db) { db.removeChannel(canal); canal = null; }
-  reportes = []; render();
+  reportes = []; notas = []; indexarNotas(); render();
   estadoConexion("Sesión cerrada", "bg-slate-500");
   $("quien").textContent = "";
   $("login-pass").value = "";
@@ -753,7 +842,7 @@ async function entrar(session) {
     errorLogin(error ? "No se pudo comprobar tu acceso: " + error.message : "Tu usuario no tiene acceso al panel.");
     return;
   }
-  listaStaff = data; STAFF_NOMBRES = data.map(x => bonito(x.usuario));
+  listaStaff = data;
   usuarioActual = yo.usuario; soyDueno = yo.es_dueno === true;
   $("admin-abrir").classList.toggle("hidden", !soyDueno);      // solo los propietarios gestionan administradores
   $("quien").textContent = bonito(yo.usuario);
@@ -802,7 +891,7 @@ function pintarAdmins() {
 }
 async function recargarStaff() {
   const { data } = await db.from("staff").select(COLS_STAFF).order("creado_en");
-  if (data) { listaStaff = data; STAFF_NOMBRES = data.map(x => bonito(x.usuario)); pintarAdmins(); render(); }
+  if (data) { listaStaff = data; pintarAdmins(); render(); }
 }
 async function mensajeError(error) {
   let msg = error.message;
@@ -891,10 +980,6 @@ async function iniciar() {
   $("login-logo").src = document.querySelector("aside img").src;
   $("live-box").classList.remove("hidden");
   render();
-  if (DEMO) {                                   // modo demostración: sin sesión
-    $("login").classList.add("hidden"); $("salir").classList.add("hidden"); $("admin-abrir").classList.add("hidden"); $("quien").textContent = "Demo";
-    cargar(); return;
-  }
   if (errorInicial) { $("login").classList.add("hidden"); mostrarError(errorInicial); return; }
   db.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") mostrarLogin(); });
   const { data } = await db.auth.getSession();
