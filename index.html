@@ -72,6 +72,9 @@
           <input id="buscar" type="search" autocomplete="off" placeholder="Buscar caso, usuario, nota…" aria-label="Buscar casos"
             class="w-full sm:w-72 bg-panel border border-line rounded-lg pl-9 pr-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">
         </div>
+        <button id="admin-abrir" type="button" class="flex items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors">
+          <svg viewBox="0 0 24 24" class="w-4 h-4 text-fx" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+          Añadir administrador</button>
         <span id="quien" class="text-sm font-medium text-slate-200 px-1"></span>
         <button id="salir" type="button" class="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-raised transition-colors">Cerrar sesión</button>
       </div>
@@ -116,18 +119,51 @@
   </form>
 </div>
 
+<div id="admin-modal" class="hidden fixed inset-0 z-[60] grid place-items-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="admin-titulo">
+  <div class="w-full max-w-md rounded-xl border border-line bg-panel p-5 sm:p-6 shadow-2xl">
+    <div class="flex items-start justify-between gap-3">
+      <h2 id="admin-titulo" class="font-display text-3xl font-bold text-white leading-none">Administradores</h2>
+      <button id="admin-cerrar" type="button" class="text-slate-400 hover:text-white p-1" aria-label="Cerrar">✕</button>
+    </div>
+    <ul id="admin-lista" class="mt-4 space-y-2"></ul>
+
+    <form id="admin-form" class="mt-5 pt-5 border-t border-line space-y-4" novalidate>
+      <h3 class="text-sm font-semibold text-slate-200">Añadir un administrador nuevo</h3>
+      <div>
+        <label for="admin-user" class="block text-xs font-medium text-slate-400 mb-1">Usuario</label>
+        <input id="admin-user" class="campo" maxlength="30" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ej: maria">
+      </div>
+      <div>
+        <div class="flex justify-between items-baseline mb-1">
+          <label for="admin-pass" class="text-xs font-medium text-slate-400">Contraseña (mínimo 12 caracteres)</label>
+          <button id="admin-generar" type="button" class="text-xs text-fx hover:underline">Generar segura</button>
+        </div>
+        <div class="relative">
+          <input id="admin-pass" type="password" class="campo pr-20" autocomplete="new-password">
+          <button id="admin-ver" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white px-2 py-1">Mostrar</button>
+        </div>
+      </div>
+      <p id="admin-error" class="hidden text-sm text-red-300"></p>
+      <div id="admin-ok" class="hidden rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+        <p class="font-semibold">Administrador creado. Copia estos datos ahora:</p>
+        <p class="mt-1">Usuario: <span id="admin-ok-usuario" class="font-mono text-white"></span></p>
+        <p>Contraseña: <span id="admin-ok-clave" class="font-mono text-white break-all"></span></p>
+        <button id="admin-copiar" type="button" class="mt-2 rounded-md border border-emerald-500/40 px-3 py-1 text-xs hover:bg-emerald-500/20">Copiar</button>
+      </div>
+      <button id="admin-btn" type="submit" class="w-full rounded-lg bg-fx hover:bg-orange-400 disabled:opacity-60 text-black font-display text-xl font-bold py-2.5 transition-colors">Añadir administrador</button>
+    </form>
+  </div>
+</div>
+
 <div id="toast" class="fixed bottom-5 right-5 bg-raised border border-line text-sm px-4 py-2.5 rounded-lg shadow-xl hidden z-50"></div>
 
 <script>
 // ================= CONFIGURACIÓN =================
 const SUPABASE_URL = "https://lpflycvomagkudyqsaug.supabase.co";
 const SUPABASE_KEY = "sb_publishable_LEkhPHD4mKJJFzIbPXBNeQ_e06arFQx";
-// Usuarios del staff: nombre de usuario -> correo con el que se crean en Supabase (Authentication > Users).
-// Estos correos tienen que ser EXACTAMENTE los mismos que en supabase.sql.
-const STAFF = {
-  apocalypse: "apocalypse@sweetdreams.test",
-  gio: "gio@sweetdreams.test"
-};
+// Los administradores se guardan en la tabla "staff" de Supabase.
+// El correo de cada uno es  usuario@DOMINIO_STAFF  (debe coincidir con la función crear-staff y con supabase.sql).
+const DOMINIO_STAFF = "sweetdreams.test";
 const DIAS_ARCHIVO = 30;   // los casos resueltos hace más de estos días se ocultan
 // =================================================
 
@@ -178,7 +214,7 @@ let busqueda = "", verArchivados = false, editando = false;
 const abiertos = new Set();                       // tarjetas con las notas desplegadas
 const norm = t => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const bonito = u => u.charAt(0).toUpperCase() + u.slice(1);
-const STAFF_NOMBRES = Object.keys(STAFF).map(bonito);
+let STAFF_NOMBRES = ["Apocalypse", "Gio"], listaStaff = [];   // se actualiza al iniciar sesión
 const ARCHIVO_MS = DIAS_ARCHIVO * 24 * 60 * 60 * 1000;
 const resueltoHace = r => Date.now() - new Date(r.resuelto_en || r.created_at);
 
@@ -692,7 +728,7 @@ document.addEventListener("toggle", e => {
 }, true);
 
 // ---------- Inicio de sesión ----------
-const usuarioDeEmail = email => Object.keys(STAFF).find(u => STAFF[u] === String(email || "").toLowerCase()) || null;
+// (el usuario se convierte en correo con DOMINIO_STAFF; la pertenencia al staff se comprueba en la tabla "staff")
 
 function mostrarLogin() {
   if (canal && db) { db.removeChannel(canal); canal = null; }
@@ -700,14 +736,22 @@ function mostrarLogin() {
   estadoConexion("Sesión cerrada", "bg-slate-500");
   $("quien").textContent = "";
   $("login-pass").value = "";
+  $("admin-modal").classList.add("hidden");
   $("login").classList.remove("hidden");
   $("login-user").focus();
 }
 
-function entrar(session) {
-  const u = session ? usuarioDeEmail(session.user.email) : null;
-  if (!u) { if (session) db.auth.signOut(); mostrarLogin(); return; }
-  $("quien").textContent = bonito(u);
+async function entrar(session) {
+  if (!session) { mostrarLogin(); return; }
+  const { data, error } = await db.from("staff").select("usuario,email,creado_por,creado_en").order("creado_en");
+  const yo = (data || []).find(x => x.email.toLowerCase() === String(session.user.email).toLowerCase());
+  if (error || !yo) {
+    await db.auth.signOut(); mostrarLogin();
+    errorLogin(error ? "No se pudo comprobar tu acceso: " + error.message : "Tu usuario no tiene acceso al panel.");
+    return;
+  }
+  listaStaff = data; STAFF_NOMBRES = data.map(x => bonito(x.usuario));
+  $("quien").textContent = bonito(yo.usuario);
   $("login").classList.add("hidden");
   cargar();
 }
@@ -723,24 +767,90 @@ $("login-ver").addEventListener("click", () => {
 $("login-form").addEventListener("submit", async e => {
   e.preventDefault();
   $("login-error").classList.add("hidden");
-  const email = STAFF[$("login-user").value.trim().toLowerCase()], pw = $("login-pass").value;
+  const usuario = $("login-user").value.trim().toLowerCase(), pw = $("login-pass").value;
+  const email = /^[a-z0-9_.-]{3,30}$/.test(usuario) ? usuario + "@" + DOMINIO_STAFF : null;
   if (!email || !pw) return errorLogin("Usuario o contraseña incorrectos.");
   $("login-btn").disabled = true; $("login-btn").textContent = "Entrando…";
   const { data, error } = await db.auth.signInWithPassword({ email, password: pw });
   if (error) await new Promise(r => setTimeout(r, 800));        // pequeña pausa ante intentos fallidos
   $("login-btn").disabled = false; $("login-btn").textContent = "Entrar";
   if (error) return errorLogin("Usuario o contraseña incorrectos.");
-  entrar(data.session);
+  await entrar(data.session);
 });
 
 $("salir").addEventListener("click", () => { if (db) db.auth.signOut(); });
+
+// ---------- Administradores ----------
+function pintarAdmins() {
+  $("admin-lista").innerHTML = listaStaff.map(x => `
+    <li class="flex items-center justify-between gap-2 rounded-md bg-base border border-line px-3 py-2 text-sm">
+      <span class="font-medium text-slate-200">${esc(bonito(x.usuario))}</span>
+      <span class="text-xs text-slate-500">${x.creado_por && x.creado_por !== "sistema" ? "añadido por " + esc(bonito(x.creado_por)) : ""}</span>
+    </li>`).join("");
+}
+function abrirAdmin() {
+  pintarAdmins();
+  $("admin-error").classList.add("hidden"); $("admin-ok").classList.add("hidden");
+  $("admin-modal").classList.remove("hidden"); $("admin-user").focus();
+}
+function cerrarAdmin() {
+  $("admin-modal").classList.add("hidden");
+  $("admin-user").value = ""; $("admin-pass").value = ""; $("admin-pass").type = "password"; $("admin-ver").textContent = "Mostrar";
+  $("admin-ok").classList.add("hidden"); $("admin-ok-clave").textContent = "";
+}
+function generarClave(n = 20) {
+  const L = "ABCDEFGHJKLMNPQRSTUVWXYZ", l = "abcdefghijkmnopqrstuvwxyz", d = "23456789", sy = "-_!#$%", todo = L + l + d + sy;
+  const azar = max => { const a = new Uint32Array(1), tope = Math.floor(4294967296 / max) * max; do { crypto.getRandomValues(a); } while (a[0] >= tope); return a[0] % max; };
+  for (;;) {
+    const c = Array.from({ length: n }, () => todo[azar(todo.length)]).join("");
+    if (/[A-Z]/.test(c) && /[a-z]/.test(c) && /\d/.test(c) && /[-_!#$%]/.test(c)) return c;
+  }
+}
+$("admin-abrir").addEventListener("click", abrirAdmin);
+$("admin-cerrar").addEventListener("click", cerrarAdmin);
+$("admin-modal").addEventListener("click", e => { if (e.target === $("admin-modal")) cerrarAdmin(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("admin-modal").classList.contains("hidden")) cerrarAdmin(); });
+$("admin-generar").addEventListener("click", () => {
+  $("admin-pass").value = generarClave(); $("admin-pass").type = "text"; $("admin-ver").textContent = "Ocultar";
+});
+$("admin-ver").addEventListener("click", () => {
+  const visible = $("admin-pass").type === "text";
+  $("admin-pass").type = visible ? "password" : "text"; $("admin-ver").textContent = visible ? "Mostrar" : "Ocultar";
+});
+$("admin-copiar").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText("Usuario: " + $("admin-ok-usuario").textContent + "\nContraseña: " + $("admin-ok-clave").textContent); toast("Datos copiados"); }
+  catch (_) { toast("No se pudo copiar: selecciónalos y cópialos a mano"); }
+});
+$("admin-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const fallo = t => { $("admin-error").textContent = t; $("admin-error").classList.remove("hidden"); $("admin-ok").classList.add("hidden"); };
+  $("admin-error").classList.add("hidden");
+  const usuario = $("admin-user").value.trim().toLowerCase(), password = $("admin-pass").value;
+  if (!/^[a-z0-9_.-]{3,30}$/.test(usuario)) return fallo("El usuario debe tener entre 3 y 30 caracteres: letras sin tildes, números, punto, guion o guion bajo.");
+  if (password.length < 12) return fallo("La contraseña debe tener al menos 12 caracteres.");
+  if (listaStaff.some(x => x.usuario === usuario)) return fallo("Ese usuario ya existe.");
+  $("admin-btn").disabled = true; $("admin-btn").textContent = "Creando…";
+  const { error } = await db.functions.invoke("crear-staff", { body: { usuario, password } });
+  $("admin-btn").disabled = false; $("admin-btn").textContent = "Añadir administrador";
+  if (error) {
+    let msg = error.message;
+    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (_) {}
+    if (error.context && error.context.status === 404) msg = "La función crear-staff no está desplegada en Supabase.";
+    return fallo("No se pudo crear: " + msg);
+  }
+  const { data } = await db.from("staff").select("usuario,email,creado_por,creado_en").order("creado_en");
+  if (data) { listaStaff = data; STAFF_NOMBRES = data.map(x => bonito(x.usuario)); pintarAdmins(); render(); }
+  $("admin-ok-usuario").textContent = usuario; $("admin-ok-clave").textContent = password; $("admin-ok").classList.remove("hidden");
+  $("admin-user").value = ""; $("admin-pass").value = ""; $("admin-pass").type = "password"; $("admin-ver").textContent = "Mostrar";
+  toast("Administrador " + bonito(usuario) + " añadido");
+});
 
 async function iniciar() {
   $("login-logo").src = document.querySelector("aside img").src;
   $("live-box").classList.remove("hidden");
   render();
   if (DEMO) {                                   // modo demostración: sin sesión
-    $("login").classList.add("hidden"); $("salir").classList.add("hidden"); $("quien").textContent = "Demo";
+    $("login").classList.add("hidden"); $("salir").classList.add("hidden"); $("admin-abrir").classList.add("hidden"); $("quien").textContent = "Demo";
     cargar(); return;
   }
   if (errorInicial) { $("login").classList.add("hidden"); mostrarError(errorInicial); return; }
