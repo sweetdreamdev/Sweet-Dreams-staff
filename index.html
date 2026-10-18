@@ -35,8 +35,9 @@
   .drag-ghost .card { border-color: #ff7a1a; }
   section[data-estado] { border-radius: 14px; transition: background .15s, box-shadow .15s; }
   section[data-estado].drop-activa { background: rgba(255,122,26,.08); box-shadow: 0 0 0 2px #ff7a1a; }
-  @keyframes nuevo { 0%,100% { box-shadow: 0 0 0 0 rgba(255,122,26,0); } 50% { box-shadow: 0 0 0 4px rgba(255,122,26,.55), 0 0 28px rgba(255,122,26,.35); } }
-  .caso-nuevo .card { border-color: #ff7a1a; animation: nuevo 1.2s ease-in-out 4; }
+  .campo { width: 100%; background: #0d0f1a; border: 1px solid #2a2f48; border-radius: .6rem; padding: .7rem .9rem; color: #e2e8f0; }
+  .campo::placeholder { color: #64748b; }
+  .campo:focus { outline: none; border-color: #ff7a1a; box-shadow: 0 0 0 3px rgba(255,122,26,.18); }
   :focus-visible { outline: 2px solid #ff7a1a; outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
@@ -65,8 +66,15 @@
 
     <header class="flex flex-wrap items-end justify-between gap-3 mb-5">
       <h1 id="titulo-vista" class="font-display text-4xl font-bold text-white leading-none">Todos</h1>
-      <button id="avisos" type="button" class="flex items-center gap-2 text-sm rounded-lg border border-line bg-panel px-3 py-2 text-slate-300 hover:text-white hover:bg-raised transition-colors" aria-pressed="true"></button>
-      
+      <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+        <div class="relative flex-1 sm:flex-none">
+          <svg viewBox="0 0 24 24" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input id="buscar" type="search" autocomplete="off" placeholder="Buscar caso, usuario, nota…" aria-label="Buscar casos"
+            class="w-full sm:w-72 bg-panel border border-line rounded-lg pl-9 pr-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">
+        </div>
+        <span id="quien" class="text-sm font-medium text-slate-200 px-1"></span>
+        <button id="salir" type="button" class="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-raised transition-colors">Cerrar sesión</button>
+      </div>
     </header>
 
     <div id="lista" class="flex gap-5 items-start overflow-x-auto pb-4 lg:grid lg:grid-cols-3 lg:overflow-visible"></div>
@@ -85,12 +93,42 @@
   </div>
 </div>
 
+<div id="login" class="fixed inset-0 z-[70] bg-scene grid place-items-center p-4 overflow-y-auto" style="background-color:#0d0f1a">
+  <form id="login-form" class="w-full max-w-sm rounded-2xl border border-line bg-panel/90 backdrop-blur p-6 sm:p-8 space-y-5" novalidate>
+    <div class="flex justify-center"><img id="login-logo" alt="Sweet Dreams" class="w-36 h-auto object-contain drop-shadow-[0_4px_14px_rgba(168,85,247,.45)]"></div>
+    <div class="text-center">
+      <h1 class="font-display text-3xl font-bold text-white leading-none">Acceso del staff</h1>
+      <p class="text-sm text-slate-400 mt-2">Inicia sesión para ver los casos.</p>
+    </div>
+    <div>
+      <label for="login-user" class="block text-sm font-medium text-slate-300 mb-1.5">Usuario</label>
+      <input id="login-user" class="campo" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    </div>
+    <div>
+      <label for="login-pass" class="block text-sm font-medium text-slate-300 mb-1.5">Contraseña</label>
+      <div class="relative">
+        <input id="login-pass" type="password" class="campo pr-20" autocomplete="current-password" required>
+        <button id="login-ver" type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white px-2 py-1">Mostrar</button>
+      </div>
+    </div>
+    <p id="login-error" class="hidden text-sm text-red-300"></p>
+    <button id="login-btn" type="submit" class="w-full rounded-lg bg-fx hover:bg-orange-400 disabled:opacity-60 text-black font-display text-xl font-bold py-3 transition-colors">Entrar</button>
+  </form>
+</div>
+
 <div id="toast" class="fixed bottom-5 right-5 bg-raised border border-line text-sm px-4 py-2.5 rounded-lg shadow-xl hidden z-50"></div>
 
 <script>
 // ================= CONFIGURACIÓN =================
 const SUPABASE_URL = "https://lpflycvomagkudyqsaug.supabase.co";
 const SUPABASE_KEY = "sb_publishable_LEkhPHD4mKJJFzIbPXBNeQ_e06arFQx";
+// Usuarios del staff: nombre de usuario -> correo con el que se crean en Supabase (Authentication > Users).
+// Estos correos tienen que ser EXACTAMENTE los mismos que en supabase.sql.
+const STAFF = {
+  apocalypse: "apocalypse@sweetdreams.test",
+  gio: "gio@sweetdreams.test"
+};
+const DIAS_ARCHIVO = 30;   // los casos resueltos hace más de estos días se ocultan
 // =================================================
 
 const $ = id => document.getElementById(id);
@@ -136,6 +174,13 @@ const VISTAS = [
 const SEMANA = 7 * 24 * 60 * 60 * 1000;
 
 let reportes = [], filtro = "Todos", orden = "prioridad", canal = null;
+let busqueda = "", verArchivados = false, editando = false;
+const abiertos = new Set();                       // tarjetas con las notas desplegadas
+const norm = t => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const bonito = u => u.charAt(0).toUpperCase() + u.slice(1);
+const STAFF_NOMBRES = Object.keys(STAFF).map(bonito);
+const ARCHIVO_MS = DIAS_ARCHIVO * 24 * 60 * 60 * 1000;
+const resueltoHace = r => Date.now() - new Date(r.resuelto_en || r.created_at);
 
 
 function toast(msg) {
@@ -150,80 +195,23 @@ function estadoConexion(texto, color) {
   $("live-dot").className = "w-2 h-2 rounded-full " + color;
 }
 
-// ---------- Avisos de casos nuevos ----------
-const nuevos = new Set();
-let avisosOn = true, audioCtx = null, sinLeer = 0;
-const TITULO_BASE = document.title;
-try { avisosOn = localStorage.getItem("avisos") !== "off"; } catch (_) {}
-
-function pintarBoton() {
-  const b = $("avisos");
-  b.setAttribute("aria-pressed", avisosOn);
-  b.innerHTML = (avisosOn
-    ? '<svg viewBox="0 0 24 24" class="w-4 h-4 text-fx" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>'
-    : '<svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="M18 8a6 6 0 0 0-9.3-5M6 8c0 7-3 9-3 9h14"/><path d="M2 2l20 20"/></svg>')
-    + "<span>Avisos " + (avisosOn ? "activados" : "silenciados") + "</span>";
-}
-
-function desbloquearAudio() {
+// ---------- Sonido suave al mover un caso de categoría ----------
+let audioCtx = null;
+function sonidoMover() {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
+    const t0 = audioCtx.currentTime, o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(520, t0);
+    o.frequency.exponentialRampToValueAtTime(340, t0 + 0.12);   // "plop" corto
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.04, t0 + 0.01);       // volumen muy bajo
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t0); o.stop(t0 + 0.16);
   } catch (_) {}
 }
-
-function sonido() {
-  desbloquearAudio();
-  if (!audioCtx) return;
-  const t0 = audioCtx.currentTime;
-  [[880, 0], [1320, 0.16]].forEach(([f, d]) => {          // dos notas: "ding-dong" ascendente
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type = "sine"; o.frequency.value = f;
-    g.gain.setValueAtTime(0.0001, t0 + d);
-    g.gain.exponentialRampToValueAtTime(0.35, t0 + d + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.55);
-    o.connect(g).connect(audioCtx.destination);
-    o.start(t0 + d); o.stop(t0 + d + 0.6);
-  });
-}
-
-function avisarNuevo(r) {
-  if (!avisosOn) return;
-  sonido();
-  const texto = "Nuevo caso #" + r.id + " · " + (r.titulo || "Sin título");
-  toast(texto);
-  nuevos.add(r.id);
-  setTimeout(() => { nuevos.delete(r.id); render(); }, 6000);
-  if (document.hidden) {
-    sinLeer++;
-    document.title = "(" + sinLeer + ") Nuevo caso · " + TITULO_BASE;
-    if ("Notification" in window && Notification.permission === "granted") {
-      try { new Notification("Nuevo caso: " + (r.tipo_reporte || "Otro"), { body: (r.titulo || "Sin título") + "\n" + (r.usuario_discord || "") }); } catch (_) {}
-    }
-  }
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) { sinLeer = 0; document.title = TITULO_BASE; }
-});
-
-// El navegador solo deja sonar el audio tras una interacción: se desbloquea con el primer clic
-document.addEventListener("pointerdown", function primero() {
-  desbloquearAudio();
-  if (avisosOn && "Notification" in window && Notification.permission === "default") Notification.requestPermission();
-  document.removeEventListener("pointerdown", primero);
-}, { once: true });
-
-$("avisos").addEventListener("click", () => {
-  avisosOn = !avisosOn;
-  try { localStorage.setItem("avisos", avisosOn ? "on" : "off"); } catch (_) {}
-  pintarBoton();
-  if (avisosOn) {
-    sonido(); toast("Avisos activados");
-    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
-  }
-});
-pintarBoton();
 
 // ---------- Datos ----------
 function datosDemo() {
@@ -266,7 +254,7 @@ async function cargar() {
     const consulta = db.from("reportes").select("*").order("created_at", { ascending: false });
     const espera = new Promise((_, rej) => setTimeout(() => rej(new Error("Supabase no responde (10 s). Revisa la URL y que el proyecto no esté pausado.")), 10000));
     const { data, error } = await Promise.race([consulta, espera]);
-    if (error) throw new Error(error.message + (error.code === "42501" || /permission|policy/i.test(error.message) ? " Falta la política de lectura (select) para anon: ejecuta el SQL de permisos." : ""));
+    if (error) throw new Error(error.message + (error.code === "42501" || /permission|policy/i.test(error.message) ? " No tienes permiso para leer los casos: comprueba que has iniciado sesión con un usuario del staff y que has ejecutado supabase.sql." : ""));
     reportes = data;
     $("error").classList.add("hidden");
     render();
@@ -275,10 +263,11 @@ async function cargar() {
 }
 
 function suscribir() {
+  if (canal) db.removeChannel(canal);
   canal = db.channel("reportes-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "reportes" }, p => {
       if (p.eventType === "INSERT") {
-        if (!reportes.some(r => r.id === p.new.id)) { reportes.unshift(p.new); avisarNuevo(p.new); }
+        if (!reportes.some(r => r.id === p.new.id)) reportes.unshift(p.new);
       } else if (p.eventType === "UPDATE") {
         reportes = reportes.map(r => r.id === p.new.id ? p.new : r);
       } else if (p.eventType === "DELETE") {
@@ -292,12 +281,28 @@ function suscribir() {
 async function cambiarEstado(id, estado) {
   const r = reportes.find(x => x.id === id);
   if (!r || r.estado === estado) return;
-  const anterior = r.estado;
-  r.estado = estado; render();
+  const anterior = r.estado, anteriorRes = r.resuelto_en, tieneRes = "resuelto_en" in r;
+  r.estado = estado;
+  r.resuelto_en = estado === "Resuelto" ? new Date().toISOString() : null;
+  render();
   if (DEMO) { toast("Caso #" + id + " marcado como " + estado + " (solo demostración)"); return; }
-  const { error } = await db.from("reportes").update({ estado }).eq("id", id);
-  if (error) { r.estado = anterior; render(); toast("No se pudo cambiar el estado: " + error.message); }
+  const cambios = { estado };
+  if (tieneRes) cambios.resuelto_en = r.resuelto_en;
+  const { error } = await db.from("reportes").update(cambios).eq("id", id);
+  if (error) { r.estado = anterior; r.resuelto_en = anteriorRes; render(); toast("No se pudo cambiar el estado: " + error.message); }
   else toast("Caso #" + id + " marcado como " + estado);
+}
+
+// Guarda un campo suelto (responsable, notas) con la misma lógica optimista
+async function guardarCampo(id, campo, valor, aviso) {
+  const r = reportes.find(x => x.id === id);
+  if (!r) return;
+  const anterior = r[campo];
+  r[campo] = valor;
+  if (DEMO) { if (aviso) toast(aviso + " (solo demostración)"); return; }
+  const { error } = await db.from("reportes").update({ [campo]: valor }).eq("id", id);
+  if (error) { r[campo] = anterior; render(); toast("No se pudo guardar: " + error.message); }
+  else if (aviso) toast(aviso);
 }
 
 async function eliminarCaso(id) {
@@ -408,6 +413,22 @@ function tarjeta(r) {
   const fecha = new Date(r.created_at).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
 
 
+  const staffHTML = `
+      <div class="mt-5 pt-4 border-t border-line">
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-slate-400" for="resp-${r.id}">Responsable</label>
+          <select id="resp-${r.id}" data-resp="${r.id}" class="flex-1 min-w-0 bg-base border border-line rounded-md px-2 py-1.5 text-sm text-slate-200 focus:border-fx focus:outline-none">
+            <option value="">Sin asignar</option>
+            ${STAFF_NOMBRES.map(n => `<option value="${esc(n)}" ${n === r.responsable ? "selected" : ""}>${esc(n)}</option>`).join("")}
+          </select>
+        </div>
+        <details class="mt-3" data-det="${r.id}" ${abiertos.has(r.id) ? "open" : ""}>
+          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Notas del staff${r.notas ? ' <span class="text-fx">●</span>' : ""}</summary>
+          <textarea data-nota="${r.id}" maxlength="1000" rows="3" placeholder="Notas internas (solo las ve el staff)…"
+            class="mt-2 w-full resize-y bg-base border border-line rounded-md px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">${esc(r.notas || "")}</textarea>
+        </details>
+      </div>`;
+
   return `
   <article class="card relative overflow-hidden rounded-xl border border-line bg-panel p-4 sm:p-5" style="--c:${tipo.rgb}">
     <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(520px 160px at 0% 0%, rgba(${tipo.rgb},.14), transparent 70%)"></div>
@@ -434,13 +455,14 @@ function tarjeta(r) {
       ${r.pruebas ? `<div class="mt-4">${pruebasHTML(r.pruebas)}</div>` : ""}
 
       <div class="mt-5">${barraHTML(r, estado === "Resuelto")}</div>
+${staffHTML}
 
     </div>
   </article>`;
 }
 
 function render() {
-  if ((drag && drag.activo) || deslizando) { renderPendiente = true; return; }
+  if ((drag && drag.activo) || deslizando || editando) { renderPendiente = true; return; }
   $("tabs").innerHTML = VISTAS.map(v => {
     const n = v.id === "Todos" ? reportes.length : reportes.filter(r => r.tipo_reporte === v.id).length;
     const activa = v.id === filtro;
@@ -452,7 +474,10 @@ function render() {
 
   $("titulo-vista").textContent = VISTAS.find(v => v.id === filtro).label;
 
-  const visibles = (filtro === "Todos" ? reportes : reportes.filter(r => r.tipo_reporte === filtro)).slice();
+  const raw = busqueda.trim(), q = norm(raw.replace(/^#/, "")), porId = /^#\d+$/.test(raw);
+  const visibles = (filtro === "Todos" ? reportes : reportes.filter(r => r.tipo_reporte === filtro))
+    .filter(r => !q || (porId ? String(r.id) === q
+      : norm([r.id, r.titulo, r.descripcion, r.usuario_discord, r.tipo_reporte, r.responsable, r.notas].join(" ")).includes(q)));
   visibles.sort((a, b) => orden === "prioridad"
     ? (urgencia(b) - urgencia(a)) || (new Date(a.created_at) - new Date(b.created_at))   // el más caliente arriba
     : new Date(b.created_at) - new Date(a.created_at));
@@ -463,7 +488,15 @@ function render() {
     "Resuelto":    { dot: "bg-emerald-400", vacio: "Aún no hay casos resueltos." }
   };
   $("lista").innerHTML = ESTADOS.map(e => {
-    const items = visibles.filter(r => (ESTADOS.includes(r.estado) ? r.estado : "Pendiente") === e);
+    let items = visibles.filter(r => (ESTADOS.includes(r.estado) ? r.estado : "Pendiente") === e);
+    let viejos = 0;
+    if (e === "Resuelto" && !q) {                 // con una búsqueda activa se muestran también los archivados
+      viejos = items.filter(r => resueltoHace(r) >= ARCHIVO_MS).length;
+      if (!verArchivados) items = items.filter(r => resueltoHace(r) < ARCHIVO_MS);
+    }
+    const botonArchivo = viejos > 0
+      ? `<button data-archivo type="button" class="w-full rounded-lg border border-dashed border-line text-xs text-slate-400 hover:text-white hover:bg-raised py-2.5 transition-colors">${verArchivados ? "Ocultar archivados (" + viejos + ")" : "Ver " + viejos + " resueltos de hace más de " + DIAS_ARCHIVO + " días"}</button>`
+      : "";
     return `
     <section class="min-w-0 shrink-0 w-[min(85vw,24rem)] lg:w-auto self-stretch rounded-2xl bg-panel/40 border border-line/60 p-3" aria-label="${e}" data-estado="${e}">
       <div class="flex items-center gap-2.5 mb-3 px-1">
@@ -471,8 +504,8 @@ function render() {
         <h2 class="font-display text-2xl font-bold text-white leading-none">${e}</h2>
         <span class="ml-auto text-sm text-slate-300 bg-panel border border-line rounded-full px-2.5 py-0.5">${items.length}</span>
       </div>
-      <div class="flex flex-col gap-4 min-h-[8rem]">${items.length ? items.map(t => `<div class="card-wrap w-full ${nuevos.has(t.id) ? "caso-nuevo" : ""}" data-card-id="${t.id}">${tarjeta(t)}</div>`).join("")
-        : `<div class="w-full border border-dashed border-line rounded-xl p-8 text-center text-sm text-slate-500">${COL[e].vacio}</div>`}</div>
+      <div class="flex flex-col gap-4 min-h-[8rem]">${items.length ? items.map(t => `<div class="card-wrap w-full" data-card-id="${t.id}">${tarjeta(t)}</div>`).join("")
+        : `<div class="w-full border border-dashed border-line rounded-xl p-8 text-center text-sm text-slate-500">${q ? "Sin resultados." : COL[e].vacio}</div>`}${botonArchivo}</div>
     </section>`;
   }).join("");
 }
@@ -524,7 +557,11 @@ function finArrastre(soltar) {
     bloquearClick = true; setTimeout(() => bloquearClick = false, 0);
     if (soltar) {
       const sec = seccionBajo(d.x, d.y);
-      if (sec) cambiarEstado(d.id, sec.dataset.estado);
+      if (sec) {
+        const r = reportes.find(x => x.id === d.id);
+        if (r && r.estado !== sec.dataset.estado) sonidoMover();
+        cambiarEstado(d.id, sec.dataset.estado);
+      }
     }
     if (renderPendiente) { renderPendiente = false; render(); }
   }
@@ -556,7 +593,7 @@ const onCancel = () => finArrastre(false);
 document.addEventListener("pointerdown", e => {
   if (drag || e.button !== 0) return;
   const wrap = e.target.closest(".card-wrap");
-  if (!wrap || e.target.closest("a, button, select, input, textarea, .barra-urg")) return;
+  if (!wrap || e.target.closest("a, button, select, input, textarea, summary, .barra-urg")) return;
   // En pantallas táctiles solo se arrastra desde el icono de agarre (para poder seguir haciendo scroll)
   if (e.pointerType === "touch" && !e.target.closest(".grip")) return;
   drag = { id: Number(wrap.dataset.cardId), origen: wrap, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, activo: false };
@@ -618,6 +655,7 @@ document.addEventListener("keydown", e => {
 });
 
 document.addEventListener("click", e => {
+  if (e.target.closest("[data-archivo]")) { verArchivados = !verArchivados; render(); return; }
   const borrar = e.target.closest("[data-borrar]");
   if (borrar) { pedirEliminar(Number(borrar.dataset.borrar)); return; }
   const reset = e.target.closest("[data-reset-urg]");
@@ -629,10 +667,90 @@ document.addEventListener("click", e => {
   if (btn) cambiarEstado(Number(btn.dataset.id), btn.dataset.estado);
 });
 
+$("buscar").addEventListener("input", e => { busqueda = e.target.value; render(); });
+
+document.addEventListener("change", e => {
+  const sel = e.target.closest?.("[data-resp]");
+  if (sel) {
+    const id = Number(sel.dataset.resp), v = sel.value || null;
+    guardarCampo(id, "responsable", v, v ? "Caso #" + id + " asignado a " + v : "Caso #" + id + " sin responsable");
+    return;
+  }
+  const nota = e.target.closest?.("[data-nota]");
+  if (nota) guardarCampo(Number(nota.dataset.nota), "notas", nota.value.trim() || null, "Nota guardada");
+});
+// Mientras se escribe una nota no se redibuja la página (se perdería lo escrito)
+document.addEventListener("focusin", e => { if (e.target.matches?.("textarea[data-nota]")) editando = true; });
+document.addEventListener("focusout", e => {
+  if (!e.target.matches?.("textarea[data-nota]")) return;
+  editando = false;
+  setTimeout(() => { if (renderPendiente && !editando) { renderPendiente = false; render(); } }, 0);
+});
+document.addEventListener("toggle", e => {
+  const d = e.target;
+  if (d.dataset && d.dataset.det) { const id = Number(d.dataset.det); d.open ? abiertos.add(id) : abiertos.delete(id); }
+}, true);
+
+// ---------- Inicio de sesión ----------
+const usuarioDeEmail = email => Object.keys(STAFF).find(u => STAFF[u] === String(email || "").toLowerCase()) || null;
+
+function mostrarLogin() {
+  if (canal && db) { db.removeChannel(canal); canal = null; }
+  reportes = []; render();
+  estadoConexion("Sesión cerrada", "bg-slate-500");
+  $("quien").textContent = "";
+  $("login-pass").value = "";
+  $("login").classList.remove("hidden");
+  $("login-user").focus();
+}
+
+function entrar(session) {
+  const u = session ? usuarioDeEmail(session.user.email) : null;
+  if (!u) { if (session) db.auth.signOut(); mostrarLogin(); return; }
+  $("quien").textContent = bonito(u);
+  $("login").classList.add("hidden");
+  cargar();
+}
+
+function errorLogin(msg) { $("login-error").textContent = msg; $("login-error").classList.remove("hidden"); }
+
+$("login-ver").addEventListener("click", () => {
+  const visible = $("login-pass").type === "text";
+  $("login-pass").type = visible ? "password" : "text";
+  $("login-ver").textContent = visible ? "Mostrar" : "Ocultar";
+});
+
+$("login-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("login-error").classList.add("hidden");
+  const email = STAFF[$("login-user").value.trim().toLowerCase()], pw = $("login-pass").value;
+  if (!email || !pw) return errorLogin("Usuario o contraseña incorrectos.");
+  $("login-btn").disabled = true; $("login-btn").textContent = "Entrando…";
+  const { data, error } = await db.auth.signInWithPassword({ email, password: pw });
+  if (error) await new Promise(r => setTimeout(r, 800));        // pequeña pausa ante intentos fallidos
+  $("login-btn").disabled = false; $("login-btn").textContent = "Entrar";
+  if (error) return errorLogin("Usuario o contraseña incorrectos.");
+  entrar(data.session);
+});
+
+$("salir").addEventListener("click", () => { if (db) db.auth.signOut(); });
+
+async function iniciar() {
+  $("login-logo").src = document.querySelector("aside img").src;
+  $("live-box").classList.remove("hidden");
+  render();
+  if (DEMO) {                                   // modo demostración: sin sesión
+    $("login").classList.add("hidden"); $("salir").classList.add("hidden"); $("quien").textContent = "Demo";
+    cargar(); return;
+  }
+  if (errorInicial) { $("login").classList.add("hidden"); mostrarError(errorInicial); return; }
+  db.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") mostrarLogin(); });
+  const { data } = await db.auth.getSession();
+  entrar(data.session);
+}
+
 // ---------- Arranque ----------
-$("live-box").classList.remove("hidden");
-render();
-cargar();
+iniciar();
 setInterval(render, 60000);
 </script>
 </body>
