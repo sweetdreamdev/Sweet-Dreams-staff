@@ -89,7 +89,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // Mientras no cambies la URL, el panel muestra reportes de ejemplo
-const DEMO = SUPABASE_URL.includes("TU-PROYECTO") || SUPABASE_KEY.includes("TU_ANON");
+const DEMO = SUPABASE_URL.includes("lpflycvomagkudyqsaug") || SUPABASE_KEY.includes("sb_secret_fLuQpILsg2EclVajy_I6GQ_BMrQovoS");
 let db = null, errorInicial = null;
 if (!DEMO) {
   try {
