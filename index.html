@@ -82,14 +82,14 @@
 <script>
 // ================= CONFIGURACIÓN =================
 const SUPABASE_URL = "https://lpflycvomagkudyqsaug.supabase.co";
-const SUPABASE_KEY = "sb_secret_56pNBICjWh3VLgmrq2x3Jw_hx2MPmpb";
+const SUPABASE_KEY = "sb_publishable_LEkhPHD4mKJJFzIbPXBNeQ_e06arFQx";
 // =================================================
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // Mientras no cambies la URL, el panel muestra reportes de ejemplo
-const DEMO = SUPABASE_URL.includes("lpflycvomagkudyqsaug") || SUPABASE_KEY.includes("sb_secret_56pNBICjWh3VLgmrq2x3Jw_hx2MPmpb");
+const DEMO = SUPABASE_URL.includes("lpflycvomagkudyqsaug") || SUPABASE_KEY.includes("sb_publishable_LEkhPHD4mKJJFzIbPXBNeQ_e06arFQx");
 let db = null, errorInicial = null;
 if (!DEMO) {
   try {
