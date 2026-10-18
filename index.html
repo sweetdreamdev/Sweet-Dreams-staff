@@ -52,6 +52,7 @@
 
   <!-- ============ CONTENIDO ============ -->
   <main class="flex-1 p-4 md:p-8 max-w-5xl w-full">
+    <div id="error" class="hidden mb-6 rounded-lg border border-red-500/40 bg-red-500/10 text-red-200 text-sm px-4 py-3"></div>
     <div id="demo" class="hidden mb-6 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-4 py-3">
       Estás viendo reportes de ejemplo. Cuando pongas tu URL y tu clave de Supabase en el archivo, aquí aparecerán los reportes reales.
     </div>
@@ -80,13 +81,32 @@
 
 <script>
 // ================= CONFIGURACIÓN =================
-const SUPABASE_URL = "https://lpflycvomagkudyqsaug.supabase.co";
-const SUPABASE_KEY = "sb_secret_vg4YgLRp_fLcKrP44o4cbA_o9Pu2v2T";
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+const SUPABASE_KEY = "TU_ANON_KEY";
 // =================================================
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // Mientras no cambies la URL, el panel muestra reportes de ejemplo
 const DEMO = SUPABASE_URL.includes("TU-PROYECTO") || SUPABASE_KEY.includes("TU_ANON");
-const db = DEMO ? null : supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let db = null, errorInicial = null;
+if (!DEMO) {
+  try {
+    const url = SUPABASE_URL.trim().replace(/\/+$/, "");
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url))
+      throw new Error("La URL de Supabase no es válida. Debe ser como https://abcdefgh.supabase.co (sin /rest/v1 ni nada detrás).");
+    if (typeof supabase === "undefined")
+      throw new Error("No se pudo cargar la librería de Supabase. Revisa tu conexión o desactiva el bloqueador de anuncios.");
+    db = supabase.createClient(url, SUPABASE_KEY.trim());
+  } catch (e) { errorInicial = e.message; }
+}
+
+function mostrarError(msg) {
+  $("error").innerHTML = "<strong>No se pudo conectar con Supabase.</strong><br>" + esc(msg);
+  $("error").classList.remove("hidden");
+  estadoConexion("Sin conexión", "bg-red-500");
+}
 
 const ESTADOS = ["Pendiente", "En revisión", "Resuelto"];
 const ESTADO_ESTILO = {
@@ -109,8 +129,6 @@ const SEMANA = 7 * 24 * 60 * 60 * 1000;
 
 let reportes = [], filtro = "Todos", orden = "prioridad", canal = null;
 
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function toast(msg) {
   const t = $("toast");
@@ -160,11 +178,17 @@ async function cargar() {
     render();
     return;
   }
-  const { data, error } = await db.from("reportes").select("*").order("created_at", { ascending: false });
-  if (error) { toast("No se pudieron cargar los reportes: " + error.message); return; }
-  reportes = data;
-  render();
-  suscribir();
+  if (errorInicial) { mostrarError(errorInicial); return; }
+  try {
+    const consulta = db.from("reportes").select("*").order("created_at", { ascending: false });
+    const espera = new Promise((_, rej) => setTimeout(() => rej(new Error("Supabase no responde (10 s). Revisa la URL y que el proyecto no esté pausado.")), 10000));
+    const { data, error } = await Promise.race([consulta, espera]);
+    if (error) throw new Error(error.message + (error.code === "42501" || /permission|policy/i.test(error.message) ? " Falta la política de lectura (select) para anon: ejecuta el SQL de permisos." : ""));
+    reportes = data;
+    $("error").classList.add("hidden");
+    render();
+    suscribir();
+  } catch (e) { mostrarError(e.message); }
 }
 
 function suscribir() {
@@ -309,6 +333,7 @@ $("orden").addEventListener("change", e => { orden = e.target.value; render(); }
 
 // ---------- Arranque ----------
 $("live-box").classList.remove("hidden");
+render();
 cargar();
 setInterval(render, 60000);
 </script>
