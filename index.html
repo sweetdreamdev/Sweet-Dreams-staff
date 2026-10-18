@@ -26,6 +26,15 @@
   }
   .card { transition: border-color .2s, transform .2s, box-shadow .2s; }
   .card:hover { border-color: rgba(var(--c), .55); box-shadow: 0 10px 30px -12px rgba(var(--c), .35); }
+  .card-wrap { cursor: grab; }
+  .card-wrap.drag-origen { opacity: .3; }
+  .grip { touch-action: none; cursor: grab; }
+  body.arrastrando, body.arrastrando * { cursor: grabbing !important; user-select: none !important; -webkit-user-select: none !important; }
+  .drag-ghost { position: fixed; left: 0; top: 0; z-index: 100; pointer-events: none; opacity: .95;
+    transform-origin: 20px 20px; box-shadow: 0 25px 50px -12px rgba(0,0,0,.7); }
+  .drag-ghost .card { border-color: #ff7a1a; }
+  section[data-estado] { border-radius: 14px; transition: background .15s, box-shadow .15s; }
+  section[data-estado].drop-activa { background: rgba(255,122,26,.08); box-shadow: 0 0 0 2px #ff7a1a; }
   :focus-visible { outline: 2px solid #ff7a1a; outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
@@ -268,6 +277,9 @@ function tarjeta(r) {
     <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(520px 160px at 0% 0%, rgba(${tipo.rgb},.14), transparent 70%)"></div>
     <div class="relative">
       <div class="flex flex-wrap items-center gap-2.5">
+        <span class="grip -ml-1 text-slate-500 hover:text-slate-300" title="Arrastra para cambiar de estado" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+        </span>
         <span class="px-3 py-1 rounded-full text-xs font-semibold ring-1 ${tipo.badge}">${esc(r.tipo_reporte || "Otro")}</span>
         <span class="ml-auto text-xs text-slate-500">#${esc(r.id)} · ${fecha}</span>
       </div>
@@ -291,6 +303,7 @@ function tarjeta(r) {
 }
 
 function render() {
+  if (drag && drag.activo) { renderPendiente = true; return; }
   $("tabs").innerHTML = VISTAS.map(v => {
     const n = v.id === "Todos" ? reportes.length : reportes.filter(r => r.tipo_reporte === v.id).length;
     const activa = v.id === filtro;
@@ -315,19 +328,108 @@ function render() {
   $("lista").innerHTML = ESTADOS.map(e => {
     const items = visibles.filter(r => (ESTADOS.includes(r.estado) ? r.estado : "Pendiente") === e);
     return `
-    <section class="min-w-0" aria-label="${e}">
+    <section class="min-w-0 p-2 -m-2" aria-label="${e}" data-estado="${e}">
       <div class="flex items-center gap-2.5 mb-3 px-1">
         <span class="w-2.5 h-2.5 rounded-full ${COL[e].dot}"></span>
         <h2 class="font-display text-2xl font-bold text-white leading-none">${e}</h2>
         <span class="ml-auto text-sm text-slate-300 bg-panel border border-line rounded-full px-2.5 py-0.5">${items.length}</span>
       </div>
-      <div class="flex gap-4 overflow-x-auto pb-3 snap-x snap-mandatory">${items.length ? items.map(t => `<div class="snap-start shrink-0 w-[min(85vw,23rem)]">${tarjeta(t)}</div>`).join("")
+      <div class="flex gap-4 overflow-x-auto pb-3 snap-x snap-mandatory">${items.length ? items.map(t => `<div class="card-wrap snap-start shrink-0 w-[min(85vw,23rem)]" data-card-id="${t.id}">${tarjeta(t)}</div>`).join("")
         : `<div class="w-full border border-dashed border-line rounded-xl p-8 text-center text-sm text-slate-500">${COL[e].vacio}</div>`}</div>
     </section>`;
   }).join("");
 }
 
+// ---------- Arrastrar y soltar ----------
+let drag = null, renderPendiente = false, bloquearClick = false;
+
+function seccionBajo(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el ? el.closest("section[data-estado]") : null;
+}
+
+function marcarDestino(sec) {
+  document.querySelectorAll("section.drop-activa").forEach(s => { if (s !== sec) s.classList.remove("drop-activa"); });
+  if (sec) sec.classList.add("drop-activa");
+}
+
+function autoscroll() {
+  if (!drag || !drag.activo) return;
+  const m = 90, y = drag.y;
+  if (y < m) window.scrollBy(0, -Math.ceil((m - y) / 6));
+  else if (y > innerHeight - m) window.scrollBy(0, Math.ceil((y - (innerHeight - m)) / 6));
+  // desplazamiento horizontal dentro de la fila bajo el cursor
+  const fila = (seccionBajo(drag.x, drag.y) || document.body).querySelector?.(".overflow-x-auto");
+  if (fila) {
+    const r = fila.getBoundingClientRect();
+    if (drag.x < r.left + 60) fila.scrollLeft -= 12;
+    else if (drag.x > r.right - 60) fila.scrollLeft += 12;
+  }
+  drag.raf = requestAnimationFrame(autoscroll);
+}
+
+function moverGhost() {
+  drag.ghost.style.transform = `translate(${drag.x - drag.dx}px, ${drag.y - drag.dy}px) rotate(2deg)`;
+}
+
+function finArrastre(soltar) {
+  if (!drag) return;
+  const d = drag; drag = null;
+  document.removeEventListener("pointermove", onMove);
+  document.removeEventListener("pointerup", onUp);
+  document.removeEventListener("pointercancel", onCancel);
+  if (d.activo) {
+    cancelAnimationFrame(d.raf);
+    d.ghost.remove();
+    d.origen.classList.remove("drag-origen");
+    document.body.classList.remove("arrastrando");
+    marcarDestino(null);
+    bloquearClick = true; setTimeout(() => bloquearClick = false, 0);
+    if (soltar) {
+      const sec = seccionBajo(d.x, d.y);
+      if (sec) cambiarEstado(d.id, sec.dataset.estado);
+    }
+    if (renderPendiente) { renderPendiente = false; render(); }
+  }
+}
+
+function onMove(e) {
+  if (!drag) return;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (!drag.activo) {
+    if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
+    const r = drag.origen.getBoundingClientRect();
+    drag.dx = drag.x0 - r.left; drag.dy = drag.y0 - r.top;
+    const g = drag.origen.cloneNode(true);
+    g.className = "drag-ghost"; g.style.width = r.width + "px";
+    document.body.appendChild(g);
+    drag.ghost = g; drag.activo = true;
+    drag.origen.classList.add("drag-origen");
+    document.body.classList.add("arrastrando");
+    getSelection()?.removeAllRanges();
+    drag.raf = requestAnimationFrame(autoscroll);
+  }
+  e.preventDefault();
+  moverGhost();
+  marcarDestino(seccionBajo(e.clientX, e.clientY));
+}
+const onUp = () => finArrastre(true);
+const onCancel = () => finArrastre(false);
+
+document.addEventListener("pointerdown", e => {
+  if (drag || e.button !== 0) return;
+  const wrap = e.target.closest(".card-wrap");
+  if (!wrap || e.target.closest("a, button, select, input, textarea")) return;
+  // En pantallas táctiles solo se arrastra desde el icono de agarre (para poder seguir haciendo scroll)
+  if (e.pointerType === "touch" && !e.target.closest(".grip")) return;
+  drag = { id: Number(wrap.dataset.cardId), origen: wrap, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, activo: false };
+  document.addEventListener("pointermove", onMove, { passive: false });
+  document.addEventListener("pointerup", onUp);
+  document.addEventListener("pointercancel", onCancel);
+});
+
 document.addEventListener("click", e => {
+  if (bloquearClick) { e.preventDefault(); e.stopPropagation(); return; }
   const tab = e.target.closest(".tab");
   if (tab) { filtro = tab.dataset.vista; render(); return; }
   const btn = e.target.closest(".estado-btn");
