@@ -966,6 +966,12 @@ async function recargarStaff() {
   const { data } = await db.from("staff").select(COLS_STAFF).order("creado_en");
   if (data) { listaStaff = data; pintarAdmins(); render(); }
 }
+// Llama a la función enviando explícitamente el token de la sesión actual (se renueva solo si ha caducado)
+async function invocarStaff(body) {
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) return { error: { name: "SinSesion", message: "Tu sesión ha caducado. Cierra sesión y vuelve a entrar." } };
+  return db.functions.invoke("gestionar-staff", { body, headers: { Authorization: "Bearer " + session.access_token } });
+}
 async function mensajeError(error) {
   let msg = error.message;
   try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (_) {}
@@ -1017,7 +1023,7 @@ $("admin-form").addEventListener("submit", async e => {
   if (password.length < 12) return fallo("La contraseña debe tener al menos 12 caracteres.");
   if (listaStaff.some(x => x.usuario === usuario)) return fallo("Ese usuario ya existe.");
   $("admin-btn").disabled = true; $("admin-btn").textContent = "Creando…";
-  const { error } = await db.functions.invoke("gestionar-staff", { body: { accion: "crear", usuario, password } });
+  const { error } = await invocarStaff({ accion: "crear", usuario, password });
   $("admin-btn").disabled = false; $("admin-btn").textContent = "Añadir administrador";
   if (error) return fallo("No se pudo crear: " + await mensajeError(error));
   await recargarStaff();
@@ -1039,7 +1045,7 @@ $("admin-lista").addEventListener("click", async e => {
   clearTimeout(quitarT); quitando = null;
   b.disabled = true; b.textContent = "Quitando…";
   $("admin-error").classList.add("hidden"); $("admin-ok").classList.add("hidden");
-  const { error } = await db.functions.invoke("gestionar-staff", { body: { accion: "borrar", usuario } });
+  const { error } = await invocarStaff({ accion: "borrar", usuario });
   if (error) {
     pintarAdmins();
     $("admin-error").textContent = "No se pudo quitar: " + await mensajeError(error); $("admin-error").classList.remove("hidden");
