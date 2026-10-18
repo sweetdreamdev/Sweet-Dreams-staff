@@ -807,7 +807,9 @@ async function recargarStaff() {
 async function mensajeError(error) {
   let msg = error.message;
   try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (_) {}
-  if (error.context && error.context.status === 404) msg = "La función gestionar-staff no está desplegada en Supabase.";
+  if (error.name === "FunctionsFetchError")
+    msg = "No se pudo contactar con la función gestionar-staff. Lo más probable es que no esté desplegada con ese nombre exacto o que falle al arrancar: revisa Edge Functions en Supabase.";
+  else if (error.context && error.context.status === 404) msg = "La función gestionar-staff no está desplegada en Supabase.";
   return msg;
 }
 function abrirAdmin() {
