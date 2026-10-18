@@ -218,6 +218,8 @@ let usuarioActual = null, soyDueno = false, quitando = null, quitarT = null;
 const COLS_STAFF = "usuario,email,creado_por,creado_en,es_dueno";
 const ARCHIVO_MS = DIAS_ARCHIVO * 24 * 60 * 60 * 1000;
 const resueltoHace = r => Date.now() - new Date(r.resuelto_en || r.created_at);
+let mensajes = [], mensajesIdx = new Map();      // chat público con el usuario (lo ve el usuario)
+const chatAbiertos = new Set(), borradorMsg = new Map();
 let notas = [], notasIdx = new Map();            // historial de notas por caso
 const borradorNota = new Map();                  // lo que se está escribiendo en cada caso
 const expandidas = new Set();                    // descripciones largas desplegadas
@@ -281,19 +283,31 @@ function indexarNotas() {
   }
 }
 const notasDe = id => notasIdx.get(id) || [];
+function indexarMensajes() {
+  mensajesIdx = new Map();
+  for (const m of mensajes) {
+    if (!mensajesIdx.has(m.caso_id)) mensajesIdx.set(m.caso_id, []);
+    mensajesIdx.get(m.caso_id).push(m);
+  }
+}
+const mensajesDe = id => mensajesIdx.get(id) || [];
 
 async function pedirDatos() {
   const consulta = Promise.all([
     db.from("reportes").select("*").order("created_at", { ascending: false }),
-    db.from("notas_caso").select("*").order("creado_en", { ascending: true })
+    db.from("notas_caso").select("*").order("creado_en", { ascending: true }),
+    db.from("mensajes_caso").select("*").order("creado_en", { ascending: true })
   ]);
   const espera = new Promise((_, rej) => setTimeout(() => rej(new Error("Supabase no responde (10 s). Revisa la URL y que el proyecto no esté pausado.")), 10000));
-  const [rep, not] = await Promise.race([consulta, espera]);
+  const [rep, not, msg] = await Promise.race([consulta, espera]);
   if (rep.error) throw new Error(rep.error.message + (rep.error.code === "42501" || /permission|policy/i.test(rep.error.message) ? " No tienes permiso para leer los casos: comprueba que has iniciado sesión con un usuario del staff y que has ejecutado supabase.sql." : ""));
   reportes = rep.data;
   if (not.error) toast("No se pudieron cargar las notas: " + not.error.message + " (¿has ejecutado supabase_migracion.sql?)", 8000);
   notas = not.error ? [] : not.data;
   indexarNotas();
+  if (msg.error) toast("No se pudo cargar el chat: " + msg.error.message + " (¿has ejecutado supabase_migracion_2.sql?)", 8000);
+  mensajes = msg.error ? [] : msg.data;
+  indexarMensajes();
 }
 
 async function cargar() {
@@ -325,6 +339,13 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && nuevosSinVer) { nuevosSinVer = 0; actualizarTitulo(); }
 });
 
+function avisarMensaje(m) {
+  const r = reportes.find(x => x.id === m.caso_id);
+  toast("Nuevo mensaje de " + (r ? r.usuario_discord : "un usuario") + " en el caso #" + m.caso_id, 6000);
+  sonidoNuevo();
+  if (document.hidden) { nuevosSinVer++; actualizarTitulo(); }
+}
+
 // ---------- Tiempo real y reconexión ----------
 let suscritoAntes = false;
 function suscribir() {
@@ -345,6 +366,12 @@ function suscribir() {
       if (p.eventType === "INSERT") { if (!notas.some(n => n.id === p.new.id)) notas.push(p.new); }
       else if (p.eventType === "DELETE") notas = notas.filter(n => n.id !== p.old.id);
       indexarNotas(); render();
+    })
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes_caso" }, p => {
+      if (mensajes.some(m => m.id === p.new.id)) return;
+      mensajes.push(p.new); indexarMensajes();
+      if (p.new.autor_tipo === "usuario") avisarMensaje(p.new);
+      render();
     })
     .subscribe(st => {
       if (st === "SUBSCRIBED") {
@@ -388,8 +415,24 @@ async function eliminarCaso(id) {
   if (!data || !data.length) { toast("No se pudo eliminar el caso (revisa los permisos de la tabla en Supabase)."); return; }
   reportes = reportes.filter(x => x.id !== id);
   notas = notas.filter(n => n.caso_id !== id); indexarNotas();
+  mensajes = mensajes.filter(m => m.caso_id !== id); indexarMensajes();
   render();
   toast("Caso #" + id + " eliminado");
+}
+
+// ---------- Chat con el usuario (lo que se escribe aquí lo ve el usuario) ----------
+async function agregarMensaje(id) {
+  const ta = document.querySelector(`textarea[data-msg-nuevo="${id}"]`);
+  const texto = (ta ? ta.value : (borradorMsg.get(id) || "")).trim();
+  if (!texto) return;
+  const btn = document.querySelector(`[data-msg-add="${id}"]`);
+  if (btn) btn.disabled = true;
+  const { data, error } = await db.from("mensajes_caso").insert({ caso_id: id, autor_tipo: "staff", autor: usuarioActual, texto }).select().single();
+  if (error) { if (btn) btn.disabled = false; toast("No se pudo enviar la respuesta: " + error.message); return; }
+  borradorMsg.delete(id);
+  if (!mensajes.some(m => m.id === data.id)) mensajes.push(data);
+  chatAbiertos.add(id); indexarMensajes(); editando = false; render();
+  toast("Respuesta enviada al usuario");
 }
 
 // ---------- Notas del staff (historial) ----------
@@ -512,6 +555,23 @@ function tarjeta(r) {
             <p class="mt-1 text-sm text-slate-200 whitespace-pre-wrap break-words">${esc(n.texto)}</p>
           </li>`).join("");
 
+  const ms = mensajesDe(r.id), ultimoMsg = ms[ms.length - 1];
+  const pideRespuesta = ultimoMsg && ultimoMsg.autor_tipo === "usuario";
+  const chatHTML = `
+        <details class="mt-3" data-chat-det="${r.id}" ${chatAbiertos.has(r.id) ? "open" : ""}>
+          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Chat con el usuario${ms.length ? ` <span class="text-fx">(${ms.length})</span>` : ""}${pideRespuesta ? ' <span class="text-amber-300">● sin responder</span>' : ""}</summary>
+          ${ms.length ? `<ul class="mt-2 space-y-2 max-h-64 overflow-y-auto">${ms.map(m => `
+            <li class="rounded-md border px-3 py-2 ${m.autor_tipo === "staff" ? "bg-fx/10 border-fx/30" : "bg-base border-line"}">
+              <div class="text-xs text-slate-400"><span class="font-medium text-slate-200">${m.autor_tipo === "staff" ? esc(bonito(m.autor || "staff")) + " (staff)" : esc(r.usuario_discord || "Usuario")}</span> · ${esc(fechaCorta(m.creado_en))}</div>
+              <p class="mt-1 text-sm text-slate-200 whitespace-pre-wrap break-words">${esc(m.texto)}</p>
+            </li>`).join("")}</ul>` : '<p class="mt-2 text-xs text-slate-500">El usuario aún no ha escrito.</p>'}
+          <textarea data-msg-nuevo="${r.id}" maxlength="1000" rows="2" placeholder="Responder al usuario…"
+            class="mt-2 w-full resize-y bg-base border border-line rounded-md px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">${esc(borradorMsg.get(r.id) || "")}</textarea>
+          <div class="mt-2 flex items-center justify-between gap-2">
+            <span class="text-xs text-amber-300/80">Lo verá el usuario</span>
+            <button type="button" data-msg-add="${r.id}" class="rounded-md bg-fx hover:bg-orange-400 disabled:opacity-60 text-black text-xs font-semibold px-3 py-1.5 transition-colors">Enviar respuesta</button>
+          </div>
+        </details>`;
   const staffHTML = `
       <div class="mt-5 pt-4 border-t border-line">
         <div class="flex items-center gap-2">
@@ -522,7 +582,7 @@ function tarjeta(r) {
           </select>
         </div>
         <details class="mt-3" data-det="${r.id}" ${abiertos.has(r.id) ? "open" : ""}>
-          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Notas del staff${ns.length ? ` <span class="text-fx">(${ns.length})</span>` : ""}</summary>
+          <summary class="cursor-pointer select-none text-xs text-slate-400 hover:text-white">Notas internas${ns.length ? ` <span class="text-fx">(${ns.length})</span>` : ""}</summary>
           ${ns.length ? `<ul class="mt-2 space-y-2 max-h-56 overflow-y-auto">${notasHTML}</ul>` : ""}
           <textarea data-nota-nueva="${r.id}" maxlength="1000" rows="2" placeholder="Añadir una nota interna (solo la ve el staff)…"
             class="mt-2 w-full resize-y bg-base border border-line rounded-md px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-fx focus:outline-none">${esc(borradorNota.get(r.id) || "")}</textarea>
@@ -531,6 +591,7 @@ function tarjeta(r) {
             <button type="button" data-nota-add="${r.id}" class="rounded-md bg-fx hover:bg-orange-400 disabled:opacity-60 text-black text-xs font-semibold px-3 py-1.5 transition-colors">Añadir nota</button>
           </div>
         </details>
+${chatHTML}
       </div>`;
 
   return `
@@ -762,6 +823,8 @@ document.addEventListener("keydown", e => {
 
 document.addEventListener("click", e => {
   if (e.target.closest("[data-archivo]")) { verArchivados = !verArchivados; render(); return; }
+  const addM = e.target.closest("[data-msg-add]");
+  if (addM) { agregarMensaje(Number(addM.dataset.msgAdd)); return; }
   const mas = e.target.closest("[data-mas]");
   if (mas) { const id = Number(mas.dataset.mas); expandidas.has(id) ? expandidas.delete(id) : expandidas.add(id); render(); return; }
   const addN = e.target.closest("[data-nota-add]");
@@ -798,15 +861,16 @@ document.addEventListener("change", e => {
   }
 });
 // Mientras se escribe una nota no se redibuja la página (se perdería lo escrito)
-document.addEventListener("focusin", e => { if (e.target.matches?.("textarea[data-nota-nueva]")) editando = true; });
+document.addEventListener("focusin", e => { if (e.target.matches?.("textarea[data-nota-nueva], textarea[data-msg-nuevo]")) editando = true; });
 document.addEventListener("focusout", e => {
-  if (!e.target.matches?.("textarea[data-nota-nueva]")) return;
+  if (!e.target.matches?.("textarea[data-nota-nueva], textarea[data-msg-nuevo]")) return;
   editando = false;
   setTimeout(() => { if (renderPendiente && !editando) { renderPendiente = false; render(); } }, 0);
 });
 document.addEventListener("toggle", e => {
   const d = e.target;
   if (d.dataset && d.dataset.det) { const id = Number(d.dataset.det); d.open ? abiertos.add(id) : abiertos.delete(id); }
+  if (d.dataset && d.dataset.chatDet) { const id = Number(d.dataset.chatDet); d.open ? chatAbiertos.add(id) : chatAbiertos.delete(id); }
 }, true);
 
 // Borradores de notas y atajo Ctrl/Cmd + Enter para añadirlas
@@ -819,12 +883,21 @@ document.addEventListener("keydown", e => {
   if (t && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); agregarNota(Number(t.dataset.notaNueva)); }
 });
 
+document.addEventListener("input", e => {
+  const t = e.target.closest?.("textarea[data-msg-nuevo]");
+  if (t) borradorMsg.set(Number(t.dataset.msgNuevo), t.value);
+});
+document.addEventListener("keydown", e => {
+  const t = e.target.closest?.("textarea[data-msg-nuevo]");
+  if (t && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); agregarMensaje(Number(t.dataset.msgNuevo)); }
+});
+
 // ---------- Inicio de sesión ----------
 // (el usuario se convierte en correo con DOMINIO_STAFF; la pertenencia al staff se comprueba en la tabla "staff")
 
 function mostrarLogin() {
   if (canal && db) { db.removeChannel(canal); canal = null; }
-  reportes = []; notas = []; indexarNotas(); render();
+  reportes = []; notas = []; indexarNotas(); mensajes = []; indexarMensajes(); render();
   estadoConexion("Sesión cerrada", "bg-slate-500");
   $("quien").textContent = "";
   $("login-pass").value = "";
