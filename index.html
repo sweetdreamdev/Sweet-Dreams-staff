@@ -75,6 +75,9 @@
           <option value="__sin">Sin asignar</option>
         </select>
         <button id="sonido-btn" type="button" class="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors"></button>
+        <button id="papelera-abrir" type="button" class="flex items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors">
+          <svg viewBox="0 0 24 24" class="w-4 h-4 text-fx" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+          Papelera <span id="papelera-n" class="text-xs text-slate-500"></span></button>
         <button id="admin-abrir" type="button" class="flex items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-raised transition-colors">
           <svg viewBox="0 0 24 24" class="w-4 h-4 text-fx" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
           Administradores</button>
@@ -87,11 +90,11 @@
   </main>
 </div>
 
-<div id="confirmar" class="hidden fixed inset-0 z-[60] grid place-items-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="confirmar-titulo">
+<div id="confirmar" class="hidden fixed inset-0 z-[65] grid place-items-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="confirmar-titulo">
   <div class="w-full max-w-sm rounded-xl border border-line bg-panel p-5 shadow-2xl">
     <h2 id="confirmar-titulo" class="font-display text-2xl font-bold text-white">¿Eliminar este caso?</h2>
     <p id="confirmar-texto" class="mt-2 text-sm text-slate-300 break-words"></p>
-    <p class="mt-1 text-xs text-slate-500">Esta acción no se puede deshacer.</p>
+    <p class="mt-1 text-xs text-slate-500">Irá a la papelera y un propietario podrá restaurarlo.</p>
     <div class="mt-5 flex justify-end gap-2">
       <button id="confirmar-no" class="px-4 py-2 rounded-lg text-sm text-slate-300 hover:bg-raised">Cancelar</button>
       <button id="confirmar-si" class="px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-400 text-white">Eliminar</button>
@@ -158,6 +161,23 @@
   </div>
 </div>
 
+<div id="papelera-modal" class="hidden fixed inset-0 z-[55] grid place-items-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="papelera-titulo">
+  <div class="w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-line bg-panel p-5 sm:p-6 shadow-2xl">
+    <div class="flex items-start justify-between gap-3">
+      <div>
+        <h2 id="papelera-titulo" class="font-display text-3xl font-bold text-white leading-none">Papelera</h2>
+        <p class="mt-1.5 text-xs text-slate-500">Casos eliminados. Haz clic en uno para ver su detalle.</p>
+      </div>
+      <button id="papelera-cerrar" type="button" class="text-slate-400 hover:text-white p-1" aria-label="Cerrar">✕</button>
+    </div>
+    <ul id="papelera-lista" class="mt-4 space-y-2"></ul>
+  </div>
+</div>
+
+<div id="detalle-modal" class="hidden fixed inset-0 z-[60] grid place-items-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="detalle-titulo">
+  <div id="detalle-cuerpo" class="w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-line bg-panel shadow-2xl"></div>
+</div>
+
 <div id="toast" class="fixed bottom-5 right-5 bg-raised border border-line text-sm px-4 py-2.5 rounded-lg shadow-xl hidden z-50"></div>
 
 <script>
@@ -216,6 +236,10 @@ const bonito = u => u.charAt(0).toUpperCase() + u.slice(1);
 let listaStaff = [];   // se actualiza al iniciar sesión
 let usuarioActual = null, soyDueno = false, quitando = null, quitarT = null;
 const COLS_STAFF = "usuario,email,creado_por,creado_en,es_dueno";
+const DUENOS_BORRAR = ["gio", "apocalypse"];     // solo ellos pueden borrar y restaurar casos
+const puedeBorrar = () => DUENOS_BORRAR.includes(usuarioActual);
+const activos = () => reportes.filter(r => !r.eliminado_en);
+const eliminados = () => reportes.filter(r => r.eliminado_en);
 const ARCHIVO_MS = DIAS_ARCHIVO * 24 * 60 * 60 * 1000;
 const resueltoHace = r => Date.now() - new Date(r.resuelto_en || r.created_at);
 let mensajes = [], mensajesIdx = new Map();      // chat público con el usuario (lo ve el usuario)
@@ -408,16 +432,17 @@ async function guardarCampo(id, campo, valor, aviso) {
 }
 
 async function eliminarCaso(id) {
+  if (!puedeBorrar()) { toast("Solo los propietarios pueden borrar casos."); return; }
   const r = reportes.find(x => x.id === id);
   if (!r) return;
-  const { data, error } = await db.from("reportes").delete().eq("id", id).select();
-  if (error) { toast("No se pudo eliminar: " + error.message); return; }
+  const { data, error } = await db.from("reportes")
+    .update({ eliminado_en: new Date().toISOString(), eliminado_por: usuarioActual }).eq("id", id).select();
+  if (error) { toast("No se pudo eliminar: " + error.message + (/eliminado_/.test(error.message) ? " (¿has ejecutado supabase_papelera.sql?)" : ""), 8000); return; }
   if (!data || !data.length) { toast("No se pudo eliminar el caso (revisa los permisos de la tabla en Supabase)."); return; }
-  reportes = reportes.filter(x => x.id !== id);
-  notas = notas.filter(n => n.caso_id !== id); indexarNotas();
-  mensajes = mensajes.filter(m => m.caso_id !== id); indexarMensajes();
+  reportes = reportes.map(x => x.id === id ? data[0] : x);
+  if (detalleId === id) cerrarDetalle();
   render();
-  toast("Caso #" + id + " eliminado");
+  toast("Caso #" + id + " movido a la papelera");
 }
 
 // ---------- Chat con el usuario (lo que se escribe aquí lo ve el usuario) ----------
@@ -460,6 +485,7 @@ async function borrarNota(id) {
 
 let casoAEliminar = null;
 function pedirEliminar(id) {
+  if (!puedeBorrar()) { toast("Solo los propietarios pueden borrar casos."); return; }
   const r = reportes.find(x => x.id === id);
   if (!r) return;
   casoAEliminar = id;
@@ -604,10 +630,10 @@ ${chatHTML}
         </span>
         <span class="px-3 py-1 rounded-full text-xs font-semibold ring-1 ${tipo.badge}">${esc(r.tipo_reporte || "Otro")}</span>
         <span class="ml-auto text-xs text-slate-500">#${esc(r.id)} · ${fecha}</span>
-        <button data-borrar="${r.id}" title="Eliminar caso" aria-label="Eliminar caso #${esc(r.id)}"
+        ${puedeBorrar() ? `<button data-borrar="${r.id}" title="Eliminar caso" aria-label="Eliminar caso #${esc(r.id)}"
           class="-mr-1 p-1.5 rounded-md text-slate-500 hover:text-red-300 hover:bg-red-500/15 transition-colors">
           <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
-        </button>
+        </button>` : ""}
       </div>
 
       <h3 class="font-display text-2xl font-bold text-white leading-tight mt-4">${esc(r.titulo || "Sin título")}</h3>
@@ -630,7 +656,7 @@ ${staffHTML}
 function render() {
   if ((drag && drag.activo) || deslizando || editando) { renderPendiente = true; return; }
   $("tabs").innerHTML = VISTAS.map(v => {
-    const n = v.id === "Todos" ? reportes.length : reportes.filter(r => r.tipo_reporte === v.id).length;
+    const n = v.id === "Todos" ? activos().length : activos().filter(r => r.tipo_reporte === v.id).length;
     const activa = v.id === filtro;
     return `<button data-vista="${v.id}" aria-current="${activa}"
       class="tab flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-left whitespace-nowrap font-medium transition-colors md:w-full ${activa ? "bg-raised text-white ring-1 ring-line" : "text-slate-400 hover:text-white hover:bg-raised/60"}">
@@ -641,7 +667,7 @@ function render() {
   $("titulo-vista").textContent = VISTAS.find(v => v.id === filtro).label;
 
   const raw = busqueda.trim(), q = norm(raw.replace(/^#/, "")), porId = /^#\d+$/.test(raw);
-  const visibles = (filtro === "Todos" ? reportes : reportes.filter(r => r.tipo_reporte === filtro))
+  const visibles = (filtro === "Todos" ? activos() : activos().filter(r => r.tipo_reporte === filtro))
     .filter(coincideResp)
     .filter(r => !q || (porId ? String(r.id) === q
       : norm([r.id, r.titulo, r.descripcion, r.usuario_discord, r.tipo_reporte, r.responsable_usuario, notasDe(r.id).map(n => n.texto).join(" ")].join(" ")).includes(q)));
@@ -675,6 +701,8 @@ function render() {
         : `<div class="w-full border border-dashed border-line rounded-xl p-8 text-center text-sm text-slate-500">${q ? "Sin resultados." : COL[e].vacio}</div>`}${botonArchivo}</div>
     </section>`;
   }).join("");
+  actualizarPapelera();
+  if (detalleId !== null) pintarDetalle();
 }
 
 // ---------- Arrastrar y soltar ----------
@@ -831,6 +859,11 @@ document.addEventListener("click", e => {
   if (addN) { agregarNota(Number(addN.dataset.notaAdd)); return; }
   const delN = e.target.closest("[data-nota-borrar]");
   if (delN) { borrarNota(Number(delN.dataset.notaBorrar)); return; }
+  if (e.target.closest("[data-cerrar-detalle]")) { cerrarDetalle(); return; }
+  const rest = e.target.closest("[data-restaurar]");
+  if (rest) { restaurarCaso(Number(rest.dataset.restaurar)); return; }
+  const ver = e.target.closest("[data-detalle]");
+  if (ver) { abrirDetalle(Number(ver.dataset.detalle)); return; }
   const borrar = e.target.closest("[data-borrar]");
   if (borrar) { pedirEliminar(Number(borrar.dataset.borrar)); return; }
   const reset = e.target.closest("[data-reset-urg]");
@@ -838,6 +871,11 @@ document.addEventListener("click", e => {
   if (bloquearClick) { e.preventDefault(); e.stopPropagation(); return; }
   const tab = e.target.closest(".tab");
   if (tab) { filtro = tab.dataset.vista; render(); return; }
+  // Clic en el cuerpo de una tarjeta (no en botones, listas, barra…) → detalle del caso
+  const tarj = e.target.closest(".card-wrap");
+  if (tarj && !e.target.closest("a, button, select, input, textarea, summary, details, label, .barra-urg, .grip") && !String(getSelection()).length) {
+    abrirDetalle(Number(tarj.dataset.cardId)); return;
+  }
   const btn = e.target.closest(".estado-btn");
   if (btn) cambiarEstado(Number(btn.dataset.id), btn.dataset.estado);
 });
@@ -892,6 +930,145 @@ document.addEventListener("keydown", e => {
   if (t && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); agregarMensaje(Number(t.dataset.msgNuevo)); }
 });
 
+// ---------- Detalle del caso y papelera ----------
+let detalleId = null;
+const fechaLarga = d => new Date(d).toLocaleString("es-ES", { dateStyle: "long", timeStyle: "short" });
+
+async function restaurarCaso(id) {
+  if (!puedeBorrar()) { toast("Solo los propietarios pueden restaurar casos."); return; }
+  const { data, error } = await db.from("reportes").update({ eliminado_en: null, eliminado_por: null }).eq("id", id).select();
+  if (error) { toast("No se pudo restaurar: " + error.message, 6000); return; }
+  if (!data || !data.length) { toast("No se pudo restaurar el caso (revisa los permisos de la tabla en Supabase)."); return; }
+  reportes = reportes.map(x => x.id === id ? data[0] : x);
+  render();
+  toast("Caso #" + id + " restaurado");
+}
+
+function datoDetalle(titulo, html) {
+  return `<div class="rounded-lg bg-base border border-line px-3 py-2.5 min-w-0">
+    <dt class="text-xs text-slate-500">${titulo}</dt><dd class="mt-0.5 text-sm text-slate-200 break-words">${html}</dd></div>`;
+}
+
+function pintarDetalle() {
+  const r = reportes.find(x => x.id === detalleId);
+  if (!r) { cerrarDetalle(); return; }
+  const tipo = TIPOS[r.tipo_reporte] || TIPOS.Otro;
+  const estado = ESTADOS.includes(r.estado) ? r.estado : "Pendiente";
+  const u = urgencia(r), nivel = Math.round(u * 100), manual = urgenciaManual(r) !== null;
+  const ns = notasDe(r.id), ms = mensajesDe(r.id);
+  const borrado = !!r.eliminado_en;
+
+  const temperatura = `
+    <div class="relative h-2 rounded-full mt-1.5 mb-2" style="background:linear-gradient(90deg,#3b82f6,#a855f7 50%,#ef4444)">
+      <span class="absolute top-1/2 w-4 h-4 rounded-full border-2 border-white shadow-lg" style="left:${(u * 100).toFixed(1)}%;transform:translate(-50%,-50%);background:hsl(${Math.round(210 * (1 - u))} 85% 55%)"></span>
+    </div>
+    <span class="text-xs text-slate-400">${nivel}% · ${manual ? "fijada a mano" : "automática según el tiempo"}</span>`;
+
+  const notasHTML = ns.length ? `<ul class="space-y-2">${ns.map(n => `
+      <li class="rounded-md bg-base border border-line px-3 py-2">
+        <div class="text-xs text-slate-400"><span class="font-medium text-slate-200">${esc(bonito(n.autor))}</span> · ${esc(fechaCorta(n.creado_en))}</div>
+        <p class="mt-1 text-sm text-slate-200 whitespace-pre-wrap break-words">${esc(n.texto)}</p>
+      </li>`).join("")}</ul>` : `<p class="text-sm text-slate-500">Sin notas internas.</p>`;
+
+  const chatHTML = ms.length ? `<ul class="space-y-2">${ms.map(m => `
+      <li class="rounded-md border px-3 py-2 ${m.autor_tipo === "staff" ? "bg-fx/10 border-fx/30" : "bg-base border-line"}">
+        <div class="text-xs text-slate-400"><span class="font-medium text-slate-200">${m.autor_tipo === "staff" ? esc(bonito(m.autor || "staff")) + " (staff)" : esc(r.usuario_discord || "Usuario")}</span> · ${esc(fechaCorta(m.creado_en))}</div>
+        <p class="mt-1 text-sm text-slate-200 whitespace-pre-wrap break-words">${esc(m.texto)}</p>
+      </li>`).join("")}</ul>` : `<p class="text-sm text-slate-500">El usuario aún no ha escrito.</p>`;
+
+  const aviso = borrado ? `
+    <div class="mx-5 sm:mx-6 mt-5 flex flex-wrap items-center gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+      <span class="min-w-0">En la papelera · eliminado por <strong>${esc(bonito(r.eliminado_por || "desconocido"))}</strong> el ${esc(fechaLarga(r.eliminado_en))}</span>
+      ${puedeBorrar() ? `<button type="button" data-restaurar="${r.id}" class="ml-auto rounded-md bg-fx hover:bg-orange-400 text-black text-xs font-semibold px-3 py-1.5 transition-colors">Restaurar caso</button>` : ""}
+    </div>` : "";
+
+  const pie = (!borrado && puedeBorrar()) ? `
+    <div class="px-5 sm:px-6 py-4 border-t border-line flex justify-end">
+      <button type="button" data-borrar="${r.id}" class="rounded-lg border border-red-500/40 text-red-300 hover:bg-red-500/15 text-sm px-3.5 py-2 transition-colors">Eliminar caso</button>
+    </div>` : "";
+
+  $("detalle-cuerpo").innerHTML = `
+    <div class="relative overflow-hidden rounded-t-xl">
+      <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(520px 160px at 0% 0%, rgba(${tipo.rgb},.14), transparent 70%)"></div>
+      <div class="relative px-5 sm:px-6 pt-5">
+        <div class="flex flex-wrap items-center gap-2.5">
+          <span class="px-3 py-1 rounded-full text-xs font-semibold ring-1 ${tipo.badge}">${esc(r.tipo_reporte || "Otro")}</span>
+          <span class="px-3 py-1 rounded-full text-xs font-semibold ${ESTADO_ESTILO[estado].on}">${estado}</span>
+          <span class="text-xs text-slate-500">#${esc(r.id)}</span>
+          <button type="button" data-cerrar-detalle class="ml-auto text-slate-400 hover:text-white p-1" aria-label="Cerrar">✕</button>
+        </div>
+        <h2 id="detalle-titulo" class="font-display text-3xl font-bold text-white leading-tight mt-4 break-words">${esc(r.titulo || "Sin título")}</h2>
+      </div>
+    </div>
+    ${aviso}
+    <div class="px-5 sm:px-6 py-5 space-y-6">
+      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        ${datoDetalle("Usuario de Discord", esc(r.usuario_discord || "Anónimo"))}
+        ${datoDetalle("Responsable", r.responsable_usuario ? esc(bonito(r.responsable_usuario)) : '<span class="text-slate-500">Sin asignar</span>')}
+        ${datoDetalle("Creado", esc(fechaLarga(r.created_at)) + `<span class="block text-xs text-slate-500">${esc(hace(Date.now() - new Date(r.created_at)))}</span>`)}
+        ${datoDetalle(estado === "Resuelto" && r.resuelto_en ? "Resuelto" : "Temperatura", estado === "Resuelto" && r.resuelto_en ? esc(fechaLarga(r.resuelto_en)) : temperatura)}
+      </dl>
+      <section>
+        <h3 class="text-sm font-semibold text-slate-200 mb-2">Descripción</h3>
+        <p class="text-slate-300 leading-relaxed whitespace-pre-wrap break-words max-w-[68ch]">${esc(r.descripcion || "Sin descripción.")}</p>
+      </section>
+      <section>
+        <h3 class="text-sm font-semibold text-slate-200 mb-2">Pruebas</h3>
+        ${r.pruebas ? pruebasHTML(r.pruebas) : '<p class="text-sm text-slate-500">Sin pruebas adjuntas.</p>'}
+      </section>
+      <section>
+        <h3 class="text-sm font-semibold text-slate-200 mb-2">Notas internas${ns.length ? ` <span class="text-fx">(${ns.length})</span>` : ""}</h3>
+        ${notasHTML}
+      </section>
+      <section>
+        <h3 class="text-sm font-semibold text-slate-200 mb-2">Chat con el usuario${ms.length ? ` <span class="text-fx">(${ms.length})</span>` : ""}</h3>
+        ${chatHTML}
+      </section>
+    </div>
+    ${pie}`;
+}
+
+function abrirDetalle(id) {
+  detalleId = id;
+  $("detalle-modal").classList.remove("hidden");
+  pintarDetalle();
+  const x = $("detalle-cuerpo").querySelector("[data-cerrar-detalle]"); if (x) x.focus();
+}
+function cerrarDetalle() { detalleId = null; $("detalle-modal").classList.add("hidden"); }
+
+function actualizarPapelera() {
+  const lista = eliminados().sort((a, b) => new Date(b.eliminado_en) - new Date(a.eliminado_en));
+  $("papelera-n").textContent = lista.length ? "(" + lista.length + ")" : "";
+  if ($("papelera-modal").classList.contains("hidden")) return;
+  $("papelera-lista").innerHTML = lista.length ? lista.map(r => {
+    const tipo = TIPOS[r.tipo_reporte] || TIPOS.Otro;
+    return `
+    <li class="flex items-center gap-2 rounded-lg bg-base border border-line">
+      <button type="button" data-detalle="${r.id}" class="flex-1 min-w-0 flex items-center gap-3 text-left px-3 py-2.5 rounded-lg hover:bg-raised/60 transition-colors">
+        <span class="w-2.5 h-2.5 rounded-full shrink-0 ${tipo.dot}"></span>
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-slate-200 truncate">#${esc(r.id)} · ${esc(r.titulo || "Sin título")}</span>
+          <span class="block text-xs text-slate-500 truncate">${esc(r.usuario_discord || "Anónimo")} · eliminado por ${esc(bonito(r.eliminado_por || "desconocido"))} el ${esc(fechaCorta(r.eliminado_en))}</span>
+        </span>
+      </button>
+      ${puedeBorrar() ? `<button type="button" data-restaurar="${r.id}" class="shrink-0 mr-2 rounded-md border border-line px-2.5 py-1 text-xs text-slate-300 hover:text-white hover:bg-raised transition-colors">Restaurar</button>` : ""}
+    </li>`;
+  }).join("") : `<li class="rounded-xl border border-dashed border-line p-8 text-center text-sm text-slate-500">La papelera está vacía.</li>`;
+}
+function abrirPapelera() { $("papelera-modal").classList.remove("hidden"); actualizarPapelera(); $("papelera-cerrar").focus(); }
+function cerrarPapelera() { $("papelera-modal").classList.add("hidden"); }
+
+$("papelera-abrir").addEventListener("click", abrirPapelera);
+$("papelera-cerrar").addEventListener("click", cerrarPapelera);
+$("papelera-modal").addEventListener("click", e => { if (e.target === $("papelera-modal")) cerrarPapelera(); });
+$("detalle-modal").addEventListener("click", e => { if (e.target === $("detalle-modal")) cerrarDetalle(); });
+// Escape cierra primero lo que esté más arriba (si el diálogo de confirmar está abierto, lo cierra él)
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !$("confirmar").classList.contains("hidden")) return;
+  if (!$("detalle-modal").classList.contains("hidden")) cerrarDetalle();
+  else if (!$("papelera-modal").classList.contains("hidden")) cerrarPapelera();
+}, true);
+
 // ---------- Inicio de sesión ----------
 // (el usuario se convierte en correo con DOMINIO_STAFF; la pertenencia al staff se comprueba en la tabla "staff")
 
@@ -902,6 +1079,7 @@ function mostrarLogin() {
   $("quien").textContent = "";
   $("login-pass").value = "";
   $("admin-modal").classList.add("hidden");
+  cerrarDetalle(); cerrarPapelera();
   $("login").classList.remove("hidden");
   $("login-user").focus();
 }
